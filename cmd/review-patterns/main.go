@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/sito1912/review-pattern-corpus/internal/collect"
+	"github.com/sito1912/review-pattern-corpus/internal/filter"
 	"github.com/sito1912/review-pattern-corpus/internal/prompt"
 )
 
@@ -25,6 +26,8 @@ func run(args []string, env []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "collect":
 		return collect.Run(args[1:], collect.EnvMap(env), stdout, stderr)
+	case "filter":
+		return filter.Run(args[1:], stdout, stderr)
 	case "prompt":
 		return prompt.Run(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -39,9 +42,11 @@ func run(args []string, env []string, stdout, stderr io.Writer) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   review-patterns collect [flags]
+  review-patterns filter [flags]
   review-patterns prompt [flags]
 
 Commands:
   collect    Collect human review comments from merged pull requests
+  filter     Filter collected JSONL records by path
   prompt     Generate a pattern update prompt from JSONL and existing patterns`)
 }
