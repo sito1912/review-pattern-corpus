@@ -37,6 +37,8 @@ Go module名は以下です。
 github.com/sito1912/review-pattern-corpus
 ```
 
+開発対象のGoバージョンは、初期設定時点の最新安定系列であるGo 1.26です。
+
 ## デフォルトのワークフロー
 
 1. 利用リポジトリにGitHub Actionを導入する。
@@ -62,6 +64,30 @@ Pull Requestの選択条件は以下です。
 ```text
 since <= pull_request.merged_at < until
 ```
+
+## CLI
+
+### `review-patterns collect`
+
+マージ済みPull Requestから人間によるレビューコメントとレビューサマリーを収集し、JSONLを出力します。
+
+```sh
+go run ./cmd/review-patterns collect \
+  --repo owner/repo \
+  --since 2026-06-21T00:00:00Z \
+  --until 2026-06-22T00:00:00Z \
+  --output reviews.jsonl
+```
+
+GitHub tokenは `GITHUB_TOKEN` または `GH_TOKEN` から読みます。必要に応じて `--token` でも指定できます。`--repo` を省略した場合は、GitHub Actions標準の `GITHUB_REPOSITORY` を使います。
+
+ローカルPCで実行する場合、環境変数や `--token` がなければ `gh auth token` を使ってGitHub CLIの認証情報を参照します。事前に `gh auth login` で対象アカウントを認証してください。
+
+`--since` と `--until` は両方指定するか、両方省略してください。両方省略した場合は前日UTCの24時間を収集します。`--output -` または未指定の場合は標準出力へJSONLを書きます。
+
+実行中は検索中の期間、見つかったPull Request数、Pull Requestごとの収集状況、書き込み先を標準エラーへ表示します。JSONLを標準出力に出す場合でも、進捗表示はJSONLに混ざりません。
+
+レート制限を受けた場合、CLIは自動リトライせずに非ゼロ終了し、GitHub APIが返すリセット時刻または `Retry-After` をエラーメッセージに含めます。
 
 ## ドキュメント
 
