@@ -24,8 +24,9 @@ JSONLコーパスファイルはデフォルトではコミットしません。
 .review-patterns/
   corpus/
     reviews-2026-06-21.jsonl
-    reviews-2026-06.jsonl
 ```
+
+Composite Actionで `storage=repo` を指定した場合、出力ファイル名は対象期間の開始UTC日を使って `.review-patterns/corpus/reviews-YYYY-MM-DD.jsonl` にします。
 
 ## レビューJSONLスキーマ
 

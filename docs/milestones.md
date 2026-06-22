@@ -50,6 +50,7 @@
 - Composite Actionのラッパー
 - 期間、保存先、保持期間、匿名化、マスク処理、issue comment収集のAction入力
 - JSONLのArtifactアップロード
+- `redact` と `anonymize` は予約入力として提供し、`true` 指定時はMVP後対応予定として明示的に失敗する
 - M4完了後、生成プロンプトのArtifactアップロード
 
 完了条件:

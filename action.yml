@@ -1,0 +1,236 @@
+name: Review Pattern Corpus
+description: Collect human review comments from merged pull requests as JSONL.
+
+inputs:
+  since:
+    description: Inclusive UTC start timestamp in RFC3339 format. Omit with until to collect the previous UTC day.
+    required: false
+    default: ""
+  until:
+    description: Exclusive UTC end timestamp in RFC3339 format. Omit with since to collect the previous UTC day.
+    required: false
+    default: ""
+  include-issue-comments:
+    description: Include pull request conversation issue comments.
+    required: false
+    default: "false"
+  storage:
+    description: Where to store the JSONL corpus. Supported values are artifact and repo.
+    required: false
+    default: artifact
+  retention-days:
+    description: Number of days to retain the JSONL artifact when storage is artifact.
+    required: false
+    default: "30"
+  redact:
+    description: Reserved. Redaction is not implemented in the MVP.
+    required: false
+    default: "false"
+  anonymize:
+    description: Reserved. Anonymization is not implemented in the MVP.
+    required: false
+    default: "false"
+  github-token:
+    description: GitHub token used to read pull request review data. Defaults to github.token.
+    required: false
+    default: ""
+
+outputs:
+  jsonl-path:
+    description: Path to the collected JSONL file on the runner.
+    value: ${{ steps.prepare.outputs.jsonl-path }}
+  artifact-name:
+    description: Uploaded artifact name when storage is artifact.
+    value: ${{ steps.prepare.outputs.artifact-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+
+    - name: Prepare collection
+      id: prepare
+      shell: bash
+      env:
+        INPUT_SINCE: ${{ inputs.since }}
+        INPUT_UNTIL: ${{ inputs.until }}
+        INPUT_INCLUDE_ISSUE_COMMENTS: ${{ inputs.include-issue-comments }}
+        INPUT_STORAGE: ${{ inputs.storage }}
+        INPUT_RETENTION_DAYS: ${{ inputs.retention-days }}
+        INPUT_REDACT: ${{ inputs.redact }}
+        INPUT_ANONYMIZE: ${{ inputs.anonymize }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        fail() {
+          echo "::error::$1" >&2
+          exit 1
+        }
+
+        add_mask() {
+          value="$1"
+          if [ -z "$value" ]; then
+            return
+          fi
+          value="${value//'%'/'%25'}"
+          value="${value//$'\r'/'%0D'}"
+          value="${value//$'\n'/'%0A'}"
+          echo "::add-mask::$value"
+        }
+
+        lower() {
+          printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+        }
+
+        add_mask "$INPUT_GITHUB_TOKEN"
+        add_mask "$DEFAULT_GITHUB_TOKEN"
+
+        include_issue_comments="$(lower "$INPUT_INCLUDE_ISSUE_COMMENTS")"
+        storage="$(lower "$INPUT_STORAGE")"
+        redact="$(lower "$INPUT_REDACT")"
+        anonymize="$(lower "$INPUT_ANONYMIZE")"
+
+        case "$include_issue_comments" in
+          true|false) ;;
+          *) fail "include-issue-comments must be true or false" ;;
+        esac
+
+        case "$storage" in
+          artifact|repo) ;;
+          *) fail "storage must be artifact or repo" ;;
+        esac
+
+        case "$redact" in
+          false) ;;
+          true) fail "redact is a reserved input and is planned after post-MVP redaction rules are defined" ;;
+          *) fail "redact must be true or false" ;;
+        esac
+
+        case "$anonymize" in
+          false) ;;
+          true) fail "anonymize is a reserved input and is planned after post-MVP anonymization rules are defined" ;;
+          *) fail "anonymize must be true or false" ;;
+        esac
+
+        case "$INPUT_RETENTION_DAYS" in
+          ''|*[!0-9]*) fail "retention-days must be a positive integer" ;;
+        esac
+        if [ "$INPUT_RETENTION_DAYS" -lt 1 ]; then
+          fail "retention-days must be a positive integer"
+        fi
+
+        if [ -z "$INPUT_SINCE" ] && [ -n "$INPUT_UNTIL" ]; then
+          fail "provide both since and until, or omit both to collect the previous UTC day"
+        fi
+        if [ -n "$INPUT_SINCE" ] && [ -z "$INPUT_UNTIL" ]; then
+          fail "provide both since and until, or omit both to collect the previous UTC day"
+        fi
+
+        period_file="${RUNNER_TEMP}/review-patterns-period.env"
+        node > "$period_file" <<'NODE'
+        const sinceInput = process.env.INPUT_SINCE;
+        const untilInput = process.env.INPUT_UNTIL;
+
+        function fail(message) {
+          console.error(`::error::${message}`);
+          process.exit(1);
+        }
+
+        function compact(date) {
+          return date.toISOString().replace(".000Z", "Z");
+        }
+
+        let since;
+        let until;
+        if (!sinceInput && !untilInput) {
+          const now = new Date();
+          const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+          since = new Date(todayUTC - 24 * 60 * 60 * 1000);
+          until = new Date(todayUTC);
+        } else {
+          since = new Date(sinceInput);
+          until = new Date(untilInput);
+          if (Number.isNaN(since.getTime())) {
+            fail("since must be a valid RFC3339 timestamp");
+          }
+          if (Number.isNaN(until.getTime())) {
+            fail("until must be a valid RFC3339 timestamp");
+          }
+          if (!(since.getTime() < until.getTime())) {
+            fail("since must be before until");
+          }
+        }
+
+        console.log(`COLLECT_SINCE=${compact(since)}`);
+        console.log(`COLLECT_UNTIL=${compact(until)}`);
+        console.log(`COLLECT_DATE=${compact(since).slice(0, 10)}`);
+        NODE
+        . "$period_file"
+
+        if [ "$storage" = "repo" ]; then
+          jsonl_path="${GITHUB_WORKSPACE}/.review-patterns/corpus/reviews-${COLLECT_DATE}.jsonl"
+          artifact_name=""
+        else
+          jsonl_path="${RUNNER_TEMP}/review-patterns-corpus/reviews-${COLLECT_DATE}.jsonl"
+          artifact_name="review-patterns-corpus-${COLLECT_DATE}"
+        fi
+
+        {
+          echo "since=$COLLECT_SINCE"
+          echo "until=$COLLECT_UNTIL"
+          echo "include-issue-comments=$include_issue_comments"
+          echo "storage=$storage"
+          echo "jsonl-path=$jsonl_path"
+          echo "artifact-name=$artifact_name"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build review-patterns
+      id: build
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        bin_dir="${RUNNER_TEMP}/review-patterns-action"
+        mkdir -p "$bin_dir"
+        go build -o "${bin_dir}/review-patterns" ./cmd/review-patterns
+        echo "binary=${bin_dir}/review-patterns" >> "$GITHUB_OUTPUT"
+
+    - name: Collect review corpus
+      shell: bash
+      env:
+        REVIEW_PATTERNS_BIN: ${{ steps.build.outputs.binary }}
+        JSONL_PATH: ${{ steps.prepare.outputs.jsonl-path }}
+        COLLECT_SINCE: ${{ steps.prepare.outputs.since }}
+        COLLECT_UNTIL: ${{ steps.prepare.outputs.until }}
+        INCLUDE_ISSUE_COMMENTS: ${{ steps.prepare.outputs.include-issue-comments }}
+        GITHUB_TOKEN: ${{ inputs.github-token || github.token }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$(dirname "$JSONL_PATH")"
+
+        args=(
+          collect
+          --repo "$GITHUB_REPOSITORY"
+          --since "$COLLECT_SINCE"
+          --until "$COLLECT_UNTIL"
+          --output "$JSONL_PATH"
+        )
+        if [ "$INCLUDE_ISSUE_COMMENTS" = "true" ]; then
+          args+=(--include-issue-comments)
+        fi
+
+        "$REVIEW_PATTERNS_BIN" "${args[@]}"
+
+    - name: Upload JSONL artifact
+      if: ${{ steps.prepare.outputs.storage == 'artifact' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.jsonl-path }}
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}

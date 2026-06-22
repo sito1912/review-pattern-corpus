@@ -140,7 +140,13 @@ inputs:
     default: "false"
   anonymize:
     default: "false"
+  github-token:
+    required: false
 ```
+
+`github-token` が省略された場合、Actionは `github.token` を使います。Actionは受け取ったtokenをGitHub Actionsのmask commandでマスクし、ログへ値が出ないようにします。
+
+M3時点では、`redact` と `anonymize` は予約入力として提供します。`false` の場合のみ実行し、`true` が指定された場合は「この入力は予約済みで、MVP後のredaction/anonymizationルール確定後に対応予定」であることを示して明示的に失敗します。具体的なredaction/anonymizationルールはMVP後に決定します。
 
 ## レビューデータ収集
 
@@ -178,7 +184,7 @@ inputs:
 
 オプション:
 
-- `--storage=repo`: JSONLを `.review-patterns/corpus/` 配下に保存する。
+- `--storage=repo`: JSONLを `.review-patterns/corpus/reviews-YYYY-MM-DD.jsonl` として保存する。
 - `--storage=artifact`: JSONLをAction Artifactとして保存する。
 - `--redact`: 対応している範囲で機密情報をマスクする。
 - `--anonymize`: 対応している範囲でauthor情報を匿名化する。
