@@ -103,12 +103,18 @@
 
 成果物:
 
-- インストールガイド
-- GitHub Actions workflow例
-- セキュリティとプライバシーに関する注意
-- コーパス保存方針の説明
-- コントリビューションガイド
-- リリース手順
+- インストールガイド: `docs/install.md`
+- GitHub Actions workflow例: `docs/examples/collect-review-pattern-corpus.yml`
+- セキュリティとプライバシーに関する注意: `docs/security-and-privacy.md`、`SECURITY.md`
+- コーパス保存方針の説明: `docs/install.md`、`docs/security-and-privacy.md`
+- コントリビューションガイド: `CONTRIBUTING.md`
+- リリース手順: `docs/release.md`
+
+進捗:
+
+- 着手済み。公開前に必要な導入、保存方針、セキュリティ、コントリビューション、リリース手順のドキュメントを追加する。
+- `validate` CLIは開発をスキップしているため、公開用導入手順では必須手順に含めない。
+- 残タスクは、タグつきリリースの実行と、リリースタグを参照した検証用リポジトリでのAction実行確認。
 
 完了条件:
 

@@ -4,6 +4,12 @@
 
 このプロジェクトは、特定のAIエージェントやAIモデルに依存しない設計にします。Codex、Claude Code、その他のコーディングエージェントそのものを実装するのではなく、それらが参照できるレビュー用パタンランゲージを運用・保守することを目的とします。
 
+## ステータス
+
+このリポジトリはOSS公開準備中です。タグつきリリースはまだ公開されていません。
+
+リリース前に検証する場合は `sito1912/review-pattern-corpus@main` を使えますが、通常利用ではタグつきリリース公開後に `@v0` や `@v0.1.0` のような固定タグを参照してください。
+
 ## 目的
 
 - リポジトリ内のマージ済みPull Requestからレビューコメントを収集する。
@@ -21,13 +27,12 @@
 
 ## プロダクト構成
 
-想定する構成は、小さなGo製CLIを薄いComposite Actionで包む形です。
+構成は、小さなGo製CLIを薄いComposite Actionで包む形です。
 
 ```text
 review-patterns collect
 review-patterns filter
 review-patterns prompt
-review-patterns validate
 ```
 
 CLI名は `review-patterns` です。
@@ -124,6 +129,8 @@ go run ./cmd/review-patterns prompt \
 
 Composite Actionとして、GitHub Actions上で `review-patterns collect` と `review-patterns prompt` を実行できます。`since` と `until` を省略した場合は、前日UTCの24時間を収集します。
 
+導入手順の詳細は [インストールガイド](docs/install.md) を参照してください。コピーして使えるworkflow例は [docs/examples/collect-review-pattern-corpus.yml](docs/examples/collect-review-pattern-corpus.yml) にあります。これらの導入例はタグつきリリース公開後の通常利用を想定しています。
+
 最小構成の手動実行workflow例:
 
 ```yaml
@@ -148,6 +155,7 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v4
+      # リリース前の検証では @main を使い、通常利用ではタグつきリリースへ置き換えてください。
       - uses: sito1912/review-pattern-corpus@main
         with:
           since: ${{ inputs.since }}
@@ -158,13 +166,18 @@ jobs:
 
 `storage: repo` を指定した場合、JSONLは `.review-patterns/corpus/reviews-YYYY-MM-DD.jsonl` に書き込まれます。このモードではJSONLのArtifactアップロードは行いませんが、生成プロンプトのArtifactはアップロードします。workflowでJSONLをリポジトリに保存したい場合は、利用側のworkflowでcheckoutやcommit処理を明示してください。
 
-Action入力の `redact` と `anonymize` はM3時点では予約入力です。`true` を指定すると、MVP後のredaction/anonymizationルール確定後に対応予定であることを示して明示的に失敗します。GitHub tokenはデフォルトで `github.token` を使い、Action内部でマスクします。別tokenが必要な場合は `github-token` 入力で指定できます。
+Action入力の `redact` と `anonymize` はMVPでは予約入力です。`true` を指定すると、MVP後のredaction/anonymizationルール確定後に対応予定であることを示して明示的に失敗します。GitHub tokenはデフォルトで `github.token` を使い、Action内部でマスクします。別tokenが必要な場合は `github-token` 入力で指定できます。
 
 ## ドキュメント
 
+- [インストールガイド](docs/install.md)
+- [セキュリティとプライバシー](docs/security-and-privacy.md)
+- [リリース手順](docs/release.md)
 - [プロダクト要件](docs/product-requirements.md)
 - [データとパタン形式](docs/data-and-pattern-formats.md)
 - [マイルストーン](docs/milestones.md)
+- [コントリビューションガイド](CONTRIBUTING.md)
+- [セキュリティポリシー](SECURITY.md)
 
 ## ライセンス
 
