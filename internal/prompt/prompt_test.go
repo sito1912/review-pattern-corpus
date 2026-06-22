@@ -73,12 +73,29 @@ func TestRunAutoExtractWithoutPatterns(t *testing.T) {
 		"レコード数: 2",
 		"review_comment (1)",
 		"internal/app.go (1)",
-		"Could this return a typed error?",
+		"## JSONLの読み方",
+		"`review_comment_reply` は指摘の受理、誤解、スコープ外判断を読む補助証拠として扱う",
+		"## パタン候補の見つけ方",
+		"観察カードとして短く分解する",
+		"## 採用基準",
+		"## 書き方",
+		"## 自己シェパーディング",
+		"## 入力コーパスファイル",
+		input,
 		"生のソースコード、長いdiff hunk、長いレビューコメントをパタンファイルへコピーしない",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("prompt does not contain %q:\n%s", want, got)
 		}
+	}
+	assertInOrder(t, got,
+		"## パタン候補の見つけ方",
+		"## 採用基準",
+		"## 書き方",
+		"## 自己シェパーディング",
+	)
+	if strings.Contains(got, "Could this return a typed error?") {
+		t.Fatalf("prompt included raw JSONL body:\n%s", got)
 	}
 	if strings.Contains(got, "## 既存パタンファイル") {
 		t.Fatalf("extract prompt unexpectedly included existing pattern section:\n%s", got)
@@ -112,18 +129,29 @@ func TestRunAutoUpdateWithPatterns(t *testing.T) {
 		"# review-patterns prompt: update",
 		"差分更新してください",
 		"## 既存パタンファイル",
-		"### `P001-scriptable-output.md`",
-		"### `catalog.yaml`",
-		"Keep output scriptable.",
+		filepath.Join(patternsDir, "P001-scriptable-output.md"),
+		filepath.Join(patternsDir, "catalog.yaml"),
+		"## 採用基準",
+		"## 書き方",
+		"差分更新では、既存パタンに吸収できる候補を新規作成しない",
+		"## 入力コーパスファイル",
+		input,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("prompt does not contain %q:\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "Keep output scriptable.") {
+		t.Fatalf("prompt included raw JSONL body:\n%s", got)
+	}
+	if strings.Contains(got, "# Scriptable Output") || strings.Contains(got, "patterns:\n  - id: P001") {
+		t.Fatalf("prompt included raw pattern file content:\n%s", got)
+	}
 	if strings.Contains(got, "notes.txt") {
 		t.Fatalf("prompt included non-pattern file:\n%s", got)
 	}
-	if strings.Index(got, "P001-scriptable-output.md") > strings.Index(got, "catalog.yaml") {
+	existingPatterns := sectionFrom(t, got, "## 既存パタンファイル")
+	if strings.Index(existingPatterns, "P001-scriptable-output.md") > strings.Index(existingPatterns, "catalog.yaml") {
 		t.Fatalf("pattern files are not sorted:\n%s", got)
 	}
 }
@@ -222,4 +250,25 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(content)
+}
+
+func assertInOrder(t *testing.T, content string, wants ...string) {
+	t.Helper()
+	offset := 0
+	for _, want := range wants {
+		index := strings.Index(content[offset:], want)
+		if index < 0 {
+			t.Fatalf("prompt does not contain %q after offset %d:\n%s", want, offset, content)
+		}
+		offset += index + len(want)
+	}
+}
+
+func sectionFrom(t *testing.T, content, heading string) string {
+	t.Helper()
+	index := strings.Index(content, heading)
+	if index < 0 {
+		t.Fatalf("prompt does not contain heading %q:\n%s", heading, content)
+	}
+	return content[index:]
 }

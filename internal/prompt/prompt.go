@@ -1,7 +1,6 @@
 package prompt
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,7 +29,7 @@ type Options struct {
 }
 
 type corpus struct {
-	JSONL string
+	Path  string
 	Stats corpusStats
 }
 
@@ -42,8 +41,7 @@ type corpusStats struct {
 }
 
 type patternFile struct {
-	Path    string
-	Content string
+	Path string
 }
 
 // Run parses prompt flags and writes a generated agent prompt.
@@ -156,7 +154,6 @@ func readCorpus(path string) (corpus, error) {
 		Paths:        make(map[string]int),
 	}
 
-	var lines []string
 	for i, rawLine := range strings.Split(string(data), "\n") {
 		lineNumber := i + 1
 		line := strings.TrimSpace(strings.TrimSuffix(rawLine, "\r"))
@@ -172,23 +169,13 @@ func readCorpus(path string) (corpus, error) {
 			return corpus{}, fmt.Errorf("parse input JSONL line %d: expected JSON object", lineNumber)
 		}
 
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, []byte(line)); err != nil {
-			return corpus{}, fmt.Errorf("compact input JSONL line %d: %w", lineNumber, err)
-		}
-		lines = append(lines, compact.String())
-
 		stats.Total++
 		incrementJSONText(stats.Repos, object["repo"])
 		incrementJSONText(stats.CommentTypes, object["comment_type"])
 		incrementJSONText(stats.Paths, object["path"])
 	}
 
-	jsonl := strings.Join(lines, "\n")
-	if jsonl != "" {
-		jsonl += "\n"
-	}
-	return corpus{JSONL: jsonl, Stats: stats}, nil
+	return corpus{Path: path, Stats: stats}, nil
 }
 
 func incrementJSONText(counts map[string]int, raw json.RawMessage) {
@@ -235,17 +222,12 @@ func readPatternFiles(dir string) ([]patternFile, error) {
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read pattern file %s: %w", path, err)
-		}
 		rel, err := filepath.Rel(dir, path)
 		if err != nil {
 			return fmt.Errorf("relativize pattern file %s: %w", path, err)
 		}
 		files = append(files, patternFile{
-			Path:    filepath.ToSlash(rel),
-			Content: string(content),
+			Path: filepath.ToSlash(rel),
 		})
 		return nil
 	})
@@ -288,19 +270,17 @@ func renderPrompt(mode string, corpus corpus, patterns []patternFile, patternsDi
 		writeExtractInstructions(&b, patternsDir)
 	} else {
 		writeUpdateInstructions(&b, patternsDir)
-		writePatternFiles(&b, patterns)
+		writePatternReferences(&b, patternsDir, patterns)
 	}
 	writeCorpusSummary(&b, corpus.Stats)
-	b.WriteString("## 今回のレビューJSONL\n\n")
-	b.WriteString("以下は今回の入力コーパスです。パタン更新の根拠として読み、コミットされるパタンファイルには生のコメントや生のコードを不要に残さないでください。\n\n")
-	b.WriteString(markdownFence(corpus.JSONL, "jsonl"))
+	writeCorpusReference(&b, corpus.Path)
 	b.WriteString("\n")
 	return b.String()
 }
 
 func writeExtractInstructions(b *strings.Builder, patternsDir string) {
 	fmt.Fprintf(b, "## 目的\n\n")
-	fmt.Fprintf(b, "今回のレビューJSONLから、リポジトリローカルなコードレビュー用パタンランゲージの初期版を抽出してください。出力先は `%s` です。\n\n", patternsDir)
+	fmt.Fprintf(b, "指定されたレビューJSONLファイルから、リポジトリローカルなコードレビュー用パタンランゲージの初期版を抽出してください。出力先は `%s` です。\n\n", patternsDir)
 	writeSharedInstructions(b)
 	b.WriteString("## 初回抽出での判断\n\n")
 	b.WriteString("- 繰り返し現れる問題、または今後も再利用できる強いレビュー知識だけをパタン化する。\n")
@@ -310,7 +290,7 @@ func writeExtractInstructions(b *strings.Builder, patternsDir string) {
 
 func writeUpdateInstructions(b *strings.Builder, patternsDir string) {
 	fmt.Fprintf(b, "## 目的\n\n")
-	fmt.Fprintf(b, "今回のレビューJSONLと既存パタンを比較し、リポジトリローカルなコードレビュー用パタンランゲージを差分更新してください。出力先は `%s` です。\n\n", patternsDir)
+	fmt.Fprintf(b, "指定されたレビューJSONLファイルと既存パタンを比較し、リポジトリローカルなコードレビュー用パタンランゲージを差分更新してください。出力先は `%s` です。\n\n", patternsDir)
 	writeSharedInstructions(b)
 	b.WriteString("## 差分更新での判断\n\n")
 	b.WriteString("- 新しいレビュー例によって適用範囲、フォース、例外、誤検知が明確になる場合は既存パタンを更新する。\n")
@@ -328,15 +308,88 @@ func writeSharedInstructions(b *strings.Builder) {
 	b.WriteString("- 生のソースコード、長いdiff hunk、長いレビューコメントをパタンファイルへコピーしない。\n")
 	b.WriteString("- 個人を責める表現、不要な個人名、不要なプロプライエタリ情報を残さない。\n")
 	b.WriteString("- 「必ず」「常に」のような断定は、フォースや例外を説明できる場合だけ使う。\n\n")
+	writeCorpusReadingProcess(b)
+	writePatternMiningProcess(b)
+	writeAcceptanceCriteria(b)
+	writePatternWritingInstructions(b)
+	writeSelfShepherdingInstructions(b)
 }
 
-func writePatternFiles(b *strings.Builder, patterns []patternFile) {
+func writeCorpusReadingProcess(b *strings.Builder) {
+	b.WriteString("## JSONLの読み方\n\n")
+	b.WriteString("- JSONLを全件読み、`pr_number`、`review_id`、`in_reply_to_id` を使ってPull Request内の議論と返信関係を復元する。\n")
+	b.WriteString("- `review_comment` と意味のある `review_summary` を主証拠にし、`review_comment_reply` は指摘の受理、誤解、スコープ外判断を読む補助証拠として扱う。\n")
+	b.WriteString("- 感謝、単なる賛同、対応完了だけの返信、空に近いapproveは、パタン候補の主証拠にしない。\n")
+	b.WriteString("- `path`、`language`、`diff_hunk`、Pull Requestタイトルは文脈理解に使う。ただし、長いコードやコメント本文をパタンファイルへ残さない。\n\n")
+}
+
+func writePatternMiningProcess(b *strings.Builder) {
+	b.WriteString("## パタン候補の見つけ方\n\n")
+	b.WriteString("各レビュー指摘を、まず観察カードとして短く分解する。\n\n")
+	b.WriteString("- 文脈: どの種類の変更、コード、API、UI、テスト、運用で起きたか。\n")
+	b.WriteString("- 表面上の指摘: レビュアーが直接求めた修正。\n")
+	b.WriteString("- 背後の問題: そのままだと何が悪くなるか。\n")
+	b.WriteString("- フォース: なぜ単純に解けないか。互換性、明瞭さ、性能、セキュリティ、API一貫性、既存設計、ユーザー体験、テスト容易性などの緊張関係を書く。\n")
+	b.WriteString("- 解決の核: レビューコメント文面ではなく、再利用可能な設計判断として言い換える。\n")
+	b.WriteString("- 証拠: PR番号、コメント種別、関連パスを短く記録する。生コメント本文は残さない。\n\n")
+	b.WriteString("その後、観察カードをファイル名や単語一致ではなく、同じ問題とフォースを共有するもの同士でクラスタリングする。\n\n")
+}
+
+func writeAcceptanceCriteria(b *strings.Builder) {
+	b.WriteString("## 採用基準\n\n")
+	b.WriteString("新規または更新対象のパタン候補は、次のいずれかを満たす場合だけ採用する。\n\n")
+	b.WriteString("- 複数PRまたは複数箇所で繰り返し現れている。\n")
+	b.WriteString("- 例は少なくても、このリポジトリのレビュー文化として強い判断基準が読み取れる。\n")
+	b.WriteString("- レビューエージェントが将来の差分で観察できる兆候がある。\n")
+	b.WriteString("- 解決が単なるスタイル修正ではなく、フォースを調停している。\n\n")
+	b.WriteString("次の候補は採用しない。\n\n")
+	b.WriteString("- 一回限りの文脈依存判断。\n")
+	b.WriteString("- 個人の好みだけに見えるもの。\n")
+	b.WriteString("- 一般的すぎてこのリポジトリ固有の判断になっていないもの。\n")
+	b.WriteString("- 生のコードやレビューコメントを残さないと意味が通らないもの。\n")
+	b.WriteString("- 信頼度が低いのに硬いルールにしないと成立しないもの。\n\n")
+}
+
+func writePatternWritingInstructions(b *strings.Builder) {
+	b.WriteString("## 書き方\n\n")
+	b.WriteString("各パタンは `P###-slug.md` として作成または更新し、`catalog.yaml` に登録する。Markdownは次の見出しを使う。\n\n")
+	b.WriteString("- 要約\n")
+	b.WriteString("- 文脈\n")
+	b.WriteString("- 問題\n")
+	b.WriteString("- フォース\n")
+	b.WriteString("- 解決\n")
+	b.WriteString("- 結果として生じる文脈\n")
+	b.WriteString("- レビューでの使い方\n")
+	b.WriteString("- 具体化の方向\n")
+	b.WriteString("- 誤用と例外\n")
+	b.WriteString("- 信頼度\n")
+	b.WriteString("- 出典メモ\n")
+	b.WriteString("- 関連パタン\n")
+	b.WriteString("- 変更履歴\n\n")
+	b.WriteString("特に `フォース` を厚く書く。パタンは「この場合はこう直す」というレシピではなく、「この文脈では、これらの力が衝突するので、この中心的判断で調停する」という形にする。\n\n")
+}
+
+func writeSelfShepherdingInstructions(b *strings.Builder) {
+	b.WriteString("## 自己シェパーディング\n\n")
+	b.WriteString("パタンファイルを書き出す前に、各候補を次の観点で見直す。\n\n")
+	b.WriteString("- これはチェックリストではなく、文脈、問題、フォース、解決の関係を持つパタンになっているか。\n")
+	b.WriteString("- 解決が表面的な修正手順ではなく、フォースを調停する中心的判断として書かれているか。\n")
+	b.WriteString("- 適用しない条件、例外、誤検知しやすい条件があるか。\n")
+	b.WriteString("- 既存パタンと重複していないか。差分更新では、既存パタンに吸収できる候補を新規作成しない。\n")
+	b.WriteString("- 生のコメント、長いdiff、個人名、不要な固有情報を残していないか。\n")
+	b.WriteString("- 信頼度が低い候補を硬いルールや `high` として扱っていないか。\n\n")
+}
+
+func writePatternReferences(b *strings.Builder, patternsDir string, patterns []patternFile) {
 	b.WriteString("## 既存パタンファイル\n\n")
+	b.WriteString("以下の既存パタンファイルを読んでから差分更新してください。プロンプト本文には既存パタン本文を埋め込んでいません。\n\n")
+	var paths []string
 	for _, file := range patterns {
-		fmt.Fprintf(b, "### `%s`\n\n", file.Path)
-		b.WriteString(markdownFence(file.Content, fenceInfoForPath(file.Path)))
-		b.WriteString("\n")
+		paths = append(paths, filepath.ToSlash(filepath.Join(patternsDir, filepath.FromSlash(file.Path))))
 	}
+	b.WriteString(markdownFence(strings.Join(paths, "\n"), "text"))
+	b.WriteString("\n")
+	b.WriteString("既存パタンの内容は根拠として読みますが、更新後のパタンファイルにも生のコメントや生のコードを不要に残さないでください。\n\n")
 }
 
 func writeCorpusSummary(b *strings.Builder, stats corpusStats) {
@@ -346,6 +399,14 @@ func writeCorpusSummary(b *strings.Builder, stats corpusStats) {
 	writeCountList(b, "コメント種別", stats.CommentTypes, 8)
 	writeCountList(b, "主な対象パス", stats.Paths, 12)
 	b.WriteString("\n")
+}
+
+func writeCorpusReference(b *strings.Builder, path string) {
+	b.WriteString("## 入力コーパスファイル\n\n")
+	b.WriteString("以下のJSONLファイルを今回の入力コーパスとして読んでください。プロンプト本文にはJSONL本文を埋め込んでいません。\n\n")
+	b.WriteString(markdownFence(path, "text"))
+	b.WriteString("\n")
+	b.WriteString("パタン更新の根拠として読み、コミットされるパタンファイルには生のコメントや生のコードを不要に残さないでください。\n")
 }
 
 func writeCountList(b *strings.Builder, label string, counts map[string]int, limit int) {
@@ -384,17 +445,6 @@ func sortedCountItems(counts map[string]int) []countItem {
 		return items[i].Value < items[j].Value
 	})
 	return items
-}
-
-func fenceInfoForPath(path string) string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".md":
-		return "markdown"
-	case ".yaml", ".yml":
-		return "yaml"
-	default:
-		return ""
-	}
 }
 
 func markdownFence(content, info string) string {
