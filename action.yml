@@ -1,5 +1,5 @@
 name: Review Pattern Corpus
-description: Collect human review comments from merged pull requests as JSONL.
+description: Collect human review comments from merged pull requests as JSONL and generate a pattern update prompt.
 
 inputs:
   since:
@@ -42,6 +42,12 @@ outputs:
   artifact-name:
     description: Uploaded artifact name when storage is artifact.
     value: ${{ steps.prepare.outputs.artifact-name }}
+  prompt-path:
+    description: Path to the generated prompt file on the runner.
+    value: ${{ steps.prepare.outputs.prompt-path }}
+  prompt-artifact-name:
+    description: Uploaded artifact name for the generated prompt.
+    value: ${{ steps.prepare.outputs.prompt-artifact-name }}
 
 runs:
   using: composite
@@ -179,6 +185,8 @@ runs:
           jsonl_path="${RUNNER_TEMP}/review-patterns-corpus/reviews-${COLLECT_DATE}.jsonl"
           artifact_name="review-patterns-corpus-${COLLECT_DATE}"
         fi
+        prompt_path="${RUNNER_TEMP}/review-patterns-prompts/prompt-${COLLECT_DATE}.md"
+        prompt_artifact_name="review-patterns-prompt-${COLLECT_DATE}"
 
         {
           echo "since=$COLLECT_SINCE"
@@ -187,6 +195,8 @@ runs:
           echo "storage=$storage"
           echo "jsonl-path=$jsonl_path"
           echo "artifact-name=$artifact_name"
+          echo "prompt-path=$prompt_path"
+          echo "prompt-artifact-name=$prompt_artifact_name"
         } >> "$GITHUB_OUTPUT"
 
     - name: Build review-patterns
@@ -226,11 +236,34 @@ runs:
 
         "$REVIEW_PATTERNS_BIN" "${args[@]}"
 
+    - name: Generate prompt
+      shell: bash
+      env:
+        REVIEW_PATTERNS_BIN: ${{ steps.build.outputs.binary }}
+        JSONL_PATH: ${{ steps.prepare.outputs.jsonl-path }}
+        PROMPT_PATH: ${{ steps.prepare.outputs.prompt-path }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$(dirname "$PROMPT_PATH")"
+        "$REVIEW_PATTERNS_BIN" prompt \
+          --input "$JSONL_PATH" \
+          --patterns-dir "${GITHUB_WORKSPACE}/.review-patterns/patterns" \
+          --output "$PROMPT_PATH" \
+          --mode auto
+
     - name: Upload JSONL artifact
       if: ${{ steps.prepare.outputs.storage == 'artifact' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.prepare.outputs.artifact-name }}
         path: ${{ steps.prepare.outputs.jsonl-path }}
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}
+
+    - name: Upload prompt artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.prepare.outputs.prompt-artifact-name }}
+        path: ${{ steps.prepare.outputs.prompt-path }}
         if-no-files-found: error
         retention-days: ${{ inputs.retention-days }}
