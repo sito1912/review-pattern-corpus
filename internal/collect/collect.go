@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,8 +20,9 @@ import (
 )
 
 const (
-	schemaVersion = "1.0"
-	defaultAPIURL = "https://api.github.com"
+	schemaVersion      = "1.0"
+	defaultAPIURL      = "https://api.github.com"
+	defaultHTTPTimeout = 30 * time.Second
 )
 
 // Options describes a collect command invocation.
@@ -182,7 +184,7 @@ func Collect(ctx context.Context, opts Options) ([]Record, error) {
 		opts.APIBaseURL = defaultAPIURL
 	}
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = http.DefaultClient
+		opts.HTTPClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 
 	owner, repoName, err := splitRepo(opts.Repo)
@@ -196,7 +198,7 @@ func Collect(ctx context.Context, opts Options) ([]Record, error) {
 	}
 
 	progressf(opts.Progress, "review-patterns: searching merged pull requests")
-	prs, err := client.mergedPullRequests(ctx, opts.Repo, owner, repoName, opts.Since, opts.Until)
+	prs, err := client.mergedPullRequests(ctx, opts.Progress, opts.Repo, owner, repoName, opts.Since, opts.Until)
 	if err != nil {
 		return nil, err
 	}
@@ -357,53 +359,63 @@ type gitHubClient struct {
 	httpClient *http.Client
 }
 
-func (c *gitHubClient) mergedPullRequests(ctx context.Context, repo, owner, repoName string, since, until time.Time) ([]pullRequest, error) {
+func (c *gitHubClient) mergedPullRequests(ctx context.Context, progress io.Writer, repo, owner, repoName string, since, until time.Time) ([]pullRequest, error) {
 	startDate := since.Format("2006-01-02")
 	endDate := until.Add(-time.Nanosecond).Format("2006-01-02")
 	query := fmt.Sprintf("repo:%s is:pr is:merged merged:%s..%s", repo, startDate, endDate)
 
-	var search searchIssuesResponse
-	err := c.getAll(ctx, "/search/issues", url.Values{
-		"q":     []string{query},
-		"sort":  []string{"created"},
-		"order": []string{"asc"},
-	}, func() any {
-		return &searchIssuesResponse{}
-	}, func(page any) error {
-		response := page.(*searchIssuesResponse)
-		if response.IncompleteResults {
-			return errors.New("GitHub search returned incomplete results; narrow the collection period and retry")
-		}
-		if response.TotalCount > 1000 {
-			return errors.New("GitHub search returned more than 1000 candidate pull requests; narrow the collection period and retry")
-		}
-		search.Items = append(search.Items, response.Items...)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	prs := make([]pullRequest, 0, len(search.Items))
-	seen := make(map[int]bool, len(search.Items))
-	for _, item := range search.Items {
-		if seen[item.Number] {
-			continue
-		}
-		seen[item.Number] = true
-
-		pr, err := c.pullRequest(ctx, owner, repoName, item.Number)
-		if err != nil {
+	prs := make([]pullRequest, 0)
+	seen := make(map[int]bool)
+	var cursor *string
+	for {
+		var response graphQLSearchPullRequestsResponse
+		if err := c.graphQL(ctx, mergedPullRequestsGraphQLQuery, map[string]any{
+			"query":  query,
+			"cursor": cursor,
+		}, &response); err != nil {
 			return nil, err
 		}
-		if pr.MergedAt == nil {
-			continue
+		if response.Search.IssueCount > 1000 {
+			return nil, errors.New("GitHub search returned more than 1000 candidate pull requests; narrow the collection period and retry")
 		}
-		mergedAt := pr.MergedAt.UTC()
-		if !mergedAt.Before(since) && mergedAt.Before(until) {
-			pr.MergedAt = &mergedAt
-			prs = append(prs, pr)
+
+		for _, node := range response.Search.Nodes {
+			if node.Typename != "PullRequest" || node.Number == 0 || node.MergedAt == nil {
+				continue
+			}
+			if seen[node.Number] {
+				continue
+			}
+			seen[node.Number] = true
+			mergedAt := node.MergedAt.UTC()
+			if mergedAt.Before(since) || !mergedAt.Before(until) {
+				continue
+			}
+			prs = append(prs, pullRequest{
+				Number:   node.Number,
+				Title:    node.Title,
+				MergedAt: &mergedAt,
+				Base: struct {
+					Ref string `json:"ref"`
+				}{
+					Ref: node.BaseRefName,
+				},
+				Head: struct {
+					SHA string `json:"sha"`
+				}{
+					SHA: node.HeadRefOID,
+				},
+			})
 		}
+
+		progressf(progress, "review-patterns: searched %d merged pull request candidate(s)", len(seen))
+		if !response.Search.PageInfo.HasNextPage {
+			break
+		}
+		if response.Search.PageInfo.EndCursor == nil || *response.Search.PageInfo.EndCursor == "" {
+			return nil, fmt.Errorf("GitHub GraphQL search reported another page without an end cursor")
+		}
+		cursor = response.Search.PageInfo.EndCursor
 	}
 
 	sort.Slice(prs, func(i, j int) bool {
@@ -417,14 +429,27 @@ func (c *gitHubClient) mergedPullRequests(ctx context.Context, repo, owner, repo
 	return prs, nil
 }
 
-func (c *gitHubClient) pullRequest(ctx context.Context, owner, repoName string, number int) (pullRequest, error) {
-	var pr pullRequest
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repoName), number)
-	if err := c.get(ctx, path, nil, &pr); err != nil {
-		return pullRequest{}, err
-	}
-	return pr, nil
+const mergedPullRequestsGraphQLQuery = `
+query($query: String!, $cursor: String) {
+  search(type: ISSUE, query: $query, first: 100, after: $cursor) {
+    issueCount
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      __typename
+      ... on PullRequest {
+        number
+        title
+        mergedAt
+        baseRefName
+        headRefOid
+      }
+    }
+  }
 }
+`
 
 func (c *gitHubClient) pullReviews(ctx context.Context, owner, repoName string, number int) ([]pullReview, error) {
 	var reviews []pullReview
@@ -462,6 +487,63 @@ func (c *gitHubClient) issueComments(ctx context.Context, owner, repoName string
 	return comments, err
 }
 
+func (c *gitHubClient) graphQL(ctx context.Context, query string, variables map[string]any, target any) error {
+	body, err := json.Marshal(graphQLRequest{
+		Query:     query,
+		Variables: variables,
+	})
+	if err != nil {
+		return fmt.Errorf("encode GitHub GraphQL request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.graphQLEndpoint(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create GitHub GraphQL request: %w", err)
+	}
+	c.setGitHubHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("call GitHub GraphQL API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return apiError(resp)
+	}
+
+	var envelope graphQLResponse
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return fmt.Errorf("decode GitHub GraphQL API response: %w", err)
+	}
+	if len(envelope.Errors) > 0 {
+		return graphQLError(resp.Header, envelope.Errors)
+	}
+	if target == nil {
+		return nil
+	}
+	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+		return fmt.Errorf("GitHub GraphQL API returned no data")
+	}
+	if err := json.Unmarshal(envelope.Data, target); err != nil {
+		return fmt.Errorf("decode GitHub GraphQL API data: %w", err)
+	}
+	return nil
+}
+
+func (c *gitHubClient) graphQLEndpoint() string {
+	endpoint := *c.baseURL
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+	basePath := strings.TrimRight(endpoint.Path, "/")
+	if strings.HasSuffix(basePath, "/api/v3") {
+		basePath = strings.TrimSuffix(basePath, "/v3")
+	}
+	endpoint.Path = basePath + "/graphql"
+	return endpoint.String()
+}
+
 func (c *gitHubClient) getAll(ctx context.Context, path string, query url.Values, newPage func() any, appendPage func(any) error) error {
 	for page := 1; ; page++ {
 		pageQuery := cloneValues(query)
@@ -497,12 +579,7 @@ func (c *gitHubClient) getWithHeaders(ctx context.Context, path string, query ur
 	if err != nil {
 		return nil, fmt.Errorf("create GitHub request: %w", err)
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "review-patterns")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
+	c.setGitHubHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -518,6 +595,15 @@ func (c *gitHubClient) getWithHeaders(ctx context.Context, path string, query ur
 		return resp.Header, fmt.Errorf("decode GitHub API response: %w", err)
 	}
 	return resp.Header, nil
+}
+
+func (c *gitHubClient) setGitHubHeaders(req *http.Request) {
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", "review-patterns")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 }
 
 func apiError(resp *http.Response) error {
@@ -547,6 +633,29 @@ func apiError(resp *http.Response) error {
 	return fmt.Errorf("GitHub API %s: %s", resp.Status, message)
 }
 
+func graphQLError(headers http.Header, errors []graphQLErrorItem) error {
+	messages := make([]string, 0, len(errors))
+	for _, item := range errors {
+		message := strings.TrimSpace(item.Message)
+		if message != "" {
+			messages = append(messages, message)
+		}
+	}
+	message := strings.Join(messages, "; ")
+	if message == "" {
+		message = "unknown GraphQL error"
+	}
+	if isRateLimitMessage(message) || headers.Get("X-RateLimit-Remaining") == "0" {
+		return RateLimitError{
+			Status:     http.StatusOK,
+			Message:    message,
+			ResetAt:    rateLimitReset(headers),
+			RetryAfter: headers.Get("Retry-After"),
+		}
+	}
+	return fmt.Errorf("GitHub GraphQL API: %s", message)
+}
+
 // RateLimitError reports GitHub primary or secondary rate limiting.
 type RateLimitError struct {
 	Status     int
@@ -573,10 +682,14 @@ func isRateLimited(resp *http.Response, message string) bool {
 	if resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0" {
 		return true
 	}
-	if resp.StatusCode == http.StatusForbidden && strings.Contains(strings.ToLower(message), "rate limit") {
+	if resp.StatusCode == http.StatusForbidden && isRateLimitMessage(message) {
 		return true
 	}
 	return resp.StatusCode == http.StatusForbidden && strings.Contains(strings.ToLower(resp.Header.Get("X-RateLimit-Resource")), "search")
+}
+
+func isRateLimitMessage(message string) bool {
+	return strings.Contains(strings.ToLower(message), "rate limit")
 }
 
 func rateLimitReset(headers http.Header) *time.Time {
@@ -833,15 +946,38 @@ func languageForPath(path string) *string {
 	return nil
 }
 
-type searchIssuesResponse struct {
-	TotalCount        int           `json:"total_count"`
-	IncompleteResults bool          `json:"incomplete_results"`
-	Items             []searchIssue `json:"items"`
+type graphQLRequest struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables,omitempty"`
 }
 
-type searchIssue struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
+type graphQLResponse struct {
+	Data   json.RawMessage    `json:"data"`
+	Errors []graphQLErrorItem `json:"errors"`
+}
+
+type graphQLErrorItem struct {
+	Message string `json:"message"`
+}
+
+type graphQLSearchPullRequestsResponse struct {
+	Search struct {
+		IssueCount int `json:"issueCount"`
+		PageInfo   struct {
+			HasNextPage bool    `json:"hasNextPage"`
+			EndCursor   *string `json:"endCursor"`
+		} `json:"pageInfo"`
+		Nodes []graphQLPullRequest `json:"nodes"`
+	} `json:"search"`
+}
+
+type graphQLPullRequest struct {
+	Typename    string     `json:"__typename"`
+	Number      int        `json:"number"`
+	Title       string     `json:"title"`
+	MergedAt    *time.Time `json:"mergedAt"`
+	BaseRefName string     `json:"baseRefName"`
+	HeadRefOID  string     `json:"headRefOid"`
 }
 
 type pullRequest struct {

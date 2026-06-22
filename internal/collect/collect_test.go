@@ -90,19 +90,34 @@ func TestCollectFiltersAndOrdersRecords(t *testing.T) {
 		headers.Set("Content-Type", "application/json")
 		var body string
 		switch r.URL.Path {
-		case "/search/issues":
-			body = `{"total_count":1,"incomplete_results":false,"items":[{"number":2,"title":"Improve validation"}]}`
-		case "/repos/owner/repo/pulls/2":
+		case "/graphql":
+			if r.Method != http.MethodPost {
+				t.Fatalf("GraphQL method = %s, want POST", r.Method)
+			}
 			body = `{
-				"number":2,
-				"title":"Improve validation",
-				"merged_at":"2026-06-21T03:00:00Z",
-				"base":{"ref":"main"},
-				"head":{"sha":"abc123"}
-			}`
+					"data": {
+						"search": {
+							"issueCount": 1,
+							"pageInfo": {
+								"hasNextPage": false,
+								"endCursor": null
+							},
+							"nodes": [
+								{
+									"__typename": "PullRequest",
+									"number": 2,
+									"title": "Improve validation",
+									"mergedAt": "2026-06-21T03:00:00Z",
+									"baseRefName": "main",
+									"headRefOid": "abc123"
+								}
+							]
+						}
+					}
+				}`
 		case "/repos/owner/repo/pulls/2/reviews":
 			body = `[
-				{"id":20,"state":"APPROVED","body":"","user":{"login":"alice","type":"User"},"author_association":"MEMBER","submitted_at":"2026-06-21T03:05:00Z","html_url":"https://github.test/review/20"},
+					{"id":20,"state":"APPROVED","body":"","user":{"login":"alice","type":"User"},"author_association":"MEMBER","submitted_at":"2026-06-21T03:05:00Z","html_url":"https://github.test/review/20"},
 				{"id":21,"state":"COMMENTED","body":"Please keep the caller context.","user":{"login":"alice","type":"User"},"author_association":"MEMBER","submitted_at":"2026-06-21T03:04:00Z","html_url":"https://github.test/review/21"},
 				{"id":22,"state":"APPROVED","body":"Looks good after the cleanup.","user":{"login":"bob","type":"User"},"author_association":"CONTRIBUTOR","submitted_at":"2026-06-21T03:07:00Z","html_url":"https://github.test/review/22"},
 				{"id":23,"state":"COMMENTED","body":"Generated summary","user":{"login":"ci[bot]","type":"Bot"},"author_association":"NONE","submitted_at":"2026-06-21T03:08:00Z","html_url":"https://github.test/review/23"}
@@ -180,6 +195,94 @@ func TestCollectFiltersAndOrdersRecords(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatalf("invalid jsonl line %q: %v", line, err)
 		}
+	}
+}
+
+func TestMergedPullRequestsUsesGraphQLPaginationAndFilters(t *testing.T) {
+	var calls int
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/graphql" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request graphQLRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode GraphQL request: %v", err)
+		}
+		if !strings.Contains(request.Query, "search(type: ISSUE") {
+			t.Fatalf("query = %q, want search query", request.Query)
+		}
+		if request.Variables["query"] != "repo:owner/repo is:pr is:merged merged:2026-06-21..2026-06-21" {
+			t.Fatalf("query variable = %v", request.Variables["query"])
+		}
+
+		headers := make(http.Header)
+		headers.Set("Content-Type", "application/json")
+		calls++
+		switch calls {
+		case 1:
+			if request.Variables["cursor"] != nil {
+				t.Fatalf("first cursor = %v, want nil", request.Variables["cursor"])
+			}
+			return jsonResponse(http.StatusOK, headers, `{
+				"data": {
+					"search": {
+						"issueCount": 2,
+						"pageInfo": {"hasNextPage": true, "endCursor": "cursor-1"},
+						"nodes": [
+							{"__typename":"PullRequest","number":1,"title":"Too early","mergedAt":"2026-06-20T23:59:59Z","baseRefName":"main","headRefOid":"aaa"}
+						]
+					}
+				}
+			}`), nil
+		case 2:
+			if request.Variables["cursor"] != "cursor-1" {
+				t.Fatalf("second cursor = %v, want cursor-1", request.Variables["cursor"])
+			}
+			return jsonResponse(http.StatusOK, headers, `{
+				"data": {
+					"search": {
+						"issueCount": 2,
+						"pageInfo": {"hasNextPage": false, "endCursor": null},
+						"nodes": [
+							{"__typename":"PullRequest","number":2,"title":"Inside","mergedAt":"2026-06-21T03:00:00Z","baseRefName":"main","headRefOid":"bbb"}
+						]
+					}
+				}
+			}`), nil
+		default:
+			t.Fatalf("unexpected GraphQL call %d", calls)
+			return nil, nil
+		}
+	})}
+
+	gh, err := newGitHubClient("https://api.github.test", "token", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress bytes.Buffer
+	prs, err := gh.mergedPullRequests(
+		context.Background(),
+		&progress,
+		"owner/repo",
+		"owner",
+		"repo",
+		time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("GraphQL calls = %d, want 2", calls)
+	}
+	if len(prs) != 1 || prs[0].Number != 2 {
+		t.Fatalf("prs = %+v, want only PR #2", prs)
+	}
+	if prs[0].Head.SHA != "bbb" {
+		t.Fatalf("head sha = %q, want bbb", prs[0].Head.SHA)
+	}
+	if !strings.Contains(progress.String(), "searched 2 merged pull request candidate(s)") {
+		t.Fatalf("progress = %q", progress.String())
 	}
 }
 
