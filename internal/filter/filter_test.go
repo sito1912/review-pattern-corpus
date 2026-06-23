@@ -15,6 +15,7 @@ func TestParseOptions(t *testing.T) {
 		"--input", "reviews.jsonl",
 		"--output", "filtered.jsonl",
 		"--path", "/app/controllers",
+		"--author", "alice",
 	}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
@@ -28,6 +29,9 @@ func TestParseOptions(t *testing.T) {
 	if opts.Path != "/app/controllers" {
 		t.Fatalf("Path = %q, want /app/controllers", opts.Path)
 	}
+	if opts.Author != "alice" {
+		t.Fatalf("Author = %q, want alice", opts.Author)
+	}
 }
 
 func TestParseOptionsRequiresFlags(t *testing.T) {
@@ -35,8 +39,22 @@ func TestParseOptionsRequiresFlags(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "--path is required") {
-		t.Fatalf("error = %q, want --path error", err)
+	if !strings.Contains(err.Error(), "--path or --author is required") {
+		t.Fatalf("error = %q, want filter criterion error", err)
+	}
+}
+
+func TestParseOptionsAllowsAuthorWithoutPath(t *testing.T) {
+	opts, err := ParseOptions([]string{
+		"--input", "reviews.jsonl",
+		"--output", "filtered.jsonl",
+		"--author", "alice",
+	}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Author != "alice" {
+		t.Fatalf("Author = %q, want alice", opts.Author)
 	}
 }
 
@@ -59,7 +77,7 @@ func TestFilterJSONLMatchesPathSegments(t *testing.T) {
 	}, "\n")
 
 	var output bytes.Buffer
-	result, err := FilterJSONL(strings.NewReader(input), &output, "/app/controllers")
+	result, err := FilterJSONL(strings.NewReader(input), &output, Criteria{Path: "/app/controllers"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +110,87 @@ func TestFilterJSONLMatchesPathSegments(t *testing.T) {
 	}
 }
 
+func TestFilterJSONLMatchesAuthor(t *testing.T) {
+	input := strings.Join([]string{
+		`{"schema_version":"1.0","author":"alice","path":"app/controllers/users_controller.go","body":"alice path comment"}`,
+		`{"schema_version":"1.0","author":"bob","path":"app/controllers/admin_controller.go","body":"bob path comment"}`,
+		`{"schema_version":"1.0","author":"alice","comment_type":"review_summary","body":"alice summary"}`,
+		`{"schema_version":"1.0","comment_type":"review_summary","body":"missing author"}`,
+		`{"schema_version":"1.0","author":null,"body":"null author"}`,
+	}, "\n")
+
+	var output bytes.Buffer
+	result, err := FilterJSONL(strings.NewReader(input), &output, Criteria{Author: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Read != 5 {
+		t.Fatalf("Read = %d, want 5", result.Read)
+	}
+	if result.Written != 2 {
+		t.Fatalf("Written = %d, want 2", result.Written)
+	}
+
+	got := strings.TrimSpace(output.String())
+	for _, want := range []string{
+		"alice path comment",
+		"alice summary",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output does not contain %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		"bob path comment",
+		"missing author",
+		"null author",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("output contains %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestFilterJSONLMatchesPathAndAuthorIntersection(t *testing.T) {
+	input := strings.Join([]string{
+		`{"schema_version":"1.0","author":"alice","path":"cmd/review-patterns/main.go","body":"matching path and author"}`,
+		`{"schema_version":"1.0","author":"bob","path":"cmd/review-patterns/main.go","body":"matching path only"}`,
+		`{"schema_version":"1.0","author":"alice","path":"internal/filter/filter.go","body":"matching author only"}`,
+		`{"schema_version":"1.0","author":"alice","comment_type":"review_summary","body":"matching author without path"}`,
+	}, "\n")
+
+	var output bytes.Buffer
+	result, err := FilterJSONL(strings.NewReader(input), &output, Criteria{
+		Path:   "/cmd",
+		Author: "alice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Read != 4 {
+		t.Fatalf("Read = %d, want 4", result.Read)
+	}
+	if result.Written != 1 {
+		t.Fatalf("Written = %d, want 1", result.Written)
+	}
+
+	got := strings.TrimSpace(output.String())
+	if !strings.Contains(got, "matching path and author") {
+		t.Fatalf("output does not contain matching record:\n%s", got)
+	}
+	for _, unwanted := range []string{
+		"matching path only",
+		"matching author only",
+		"matching author without path",
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("output contains %q:\n%s", unwanted, got)
+		}
+	}
+}
+
 func TestFilterJSONLRejectsInvalidJSONWithLineNumber(t *testing.T) {
-	_, err := FilterJSONL(strings.NewReader(`{"path":"app/a.go"}`+"\nnot-json\n"), &bytes.Buffer{}, "/app")
+	_, err := FilterJSONL(strings.NewReader(`{"path":"app/a.go"}`+"\nnot-json\n"), &bytes.Buffer{}, Criteria{Path: "/app"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -103,12 +200,32 @@ func TestFilterJSONLRejectsInvalidJSONWithLineNumber(t *testing.T) {
 }
 
 func TestFilterJSONLRejectsNonStringPath(t *testing.T) {
-	_, err := FilterJSONL(strings.NewReader(`{"path":123}`+"\n"), &bytes.Buffer{}, "/app")
+	_, err := FilterJSONL(strings.NewReader(`{"path":123}`+"\n"), &bytes.Buffer{}, Criteria{Path: "/app"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "path must be a string or null") {
 		t.Fatalf("error = %q, want path type error", err)
+	}
+}
+
+func TestFilterJSONLRejectsNonStringAuthor(t *testing.T) {
+	_, err := FilterJSONL(strings.NewReader(`{"author":123}`+"\n"), &bytes.Buffer{}, Criteria{Author: "alice"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "author must be a string or null") {
+		t.Fatalf("error = %q, want author type error", err)
+	}
+}
+
+func TestFilterJSONLRequiresCriterion(t *testing.T) {
+	_, err := FilterJSONL(strings.NewReader(`{"path":"app/a.go"}`+"\n"), &bytes.Buffer{}, Criteria{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--path or --author is required") {
+		t.Fatalf("error = %q, want filter criterion error", err)
 	}
 }
 

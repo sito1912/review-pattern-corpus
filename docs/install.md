@@ -138,11 +138,14 @@ go run ./cmd/review-patterns prompt \
   --mode auto
 ```
 
-特定パスのコメントだけに絞る場合は `filter` を使います。
+特定パスやauthorのコメントだけに絞る場合は `filter` を使います。
 
 ```sh
 go run ./cmd/review-patterns filter \
   --input reviews.jsonl \
   --output app-reviews.jsonl \
-  --path /app/controllers
+  --path /app/controllers \
+  --author alice
 ```
+
+`--path` と `--author` を同時に指定した場合は、両方を満たす行だけが出力されます。

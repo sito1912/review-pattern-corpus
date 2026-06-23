@@ -110,7 +110,7 @@ until = 当日 00:00:00 UTC
 
 ### `filter`
 
-収集済みJSONLから、指定したパスに関係するコメントだけを抽出して新しいJSONLを生成します。
+収集済みJSONLから、指定したパスやauthorに関係するコメントだけを抽出して新しいJSONLを生成します。
 
 入力:
 
@@ -118,16 +118,20 @@ until = 当日 00:00:00 UTC
 --input reviews.jsonl
 --output app-reviews.jsonl
 --path /app/controllers
+--author alice
 ```
 
 挙動:
 
 - `--input` のJSONLを1行ずつ読み込む。
+- `--path` または `--author` の少なくとも一方を指定する。
 - 各JSONオブジェクトの `path` 値を、`--path` の値で検索する。
 - パスは `/` 区切りへ正規化し、先頭の `/` や `./` の有無に左右されないようにする。
 - `--path /app` は、`app/...` や `packages/backend/app/...` のようにパス区切り単位で `app` を含むファイルに一致する。
 - `--path /app/controllers` は、その配下のファイルに一致する。
 - `path` がない、`path` が `null`、または空文字のJSONオブジェクトは出力しない。
+- `--author` は各JSONオブジェクトの `author` 値に対して完全一致で検索する。
+- `--path` と `--author` を同時に指定した場合は、両方を満たすJSONオブジェクトだけを出力する。
 - マッチした行は再エンコードせず、入力JSONLの1行をそのまま `--output` へ書き込む。
 - 不正なJSONL行は行番号つきでエラーにする。
 

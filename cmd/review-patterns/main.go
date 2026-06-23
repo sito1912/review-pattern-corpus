@@ -47,6 +47,6 @@ func printUsage(w io.Writer) {
 
 Commands:
   collect    Collect human review comments from merged pull requests
-  filter     Filter collected JSONL records by path
+  filter     Filter collected JSONL records by path or author
   prompt     Generate a pattern update prompt from JSONL and existing patterns`)
 }
