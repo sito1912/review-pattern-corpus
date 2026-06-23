@@ -103,6 +103,24 @@ review-patterns prompt \
 
 パタンファイルには、生のレビューコメントや長いコード断片を保存せず、文脈、問題、フォース、解決、結果として生じる文脈を中心に抽象化して書きます。
 
+特定レビュワーの思考の癖に特化したパタンランゲージを作る場合は、先に `filter` でauthorを1人に絞り込んでから `--reviewer-patterns` を指定します。
+
+```sh
+review-patterns filter \
+  --input tmp/reviews.jsonl \
+  --output tmp/alice-reviews.jsonl \
+  --author alice
+
+review-patterns prompt \
+  --input tmp/alice-reviews.jsonl \
+  --patterns-dir .review-patterns/patterns \
+  --output tmp/alice-prompt.md \
+  --mode auto \
+  --reviewer-patterns
+```
+
+`--reviewer-patterns` は入力JSONLの全レコードの `author` が同じであることを検証します。異なるauthor、欠落、`null`、空文字が含まれる場合はエラーになります。
+
 ## 既存パタンの更新
 
 `.review-patterns/patterns/` に既存の `.md`、`.yaml`、`.yml` ファイルがある場合、`prompt` は差分更新用のプロンプトを生成します。

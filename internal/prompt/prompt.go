@@ -20,17 +20,19 @@ const (
 
 // Options describes a prompt command invocation.
 type Options struct {
-	Input       string
-	PatternsDir string
-	Output      string
-	Mode        string
+	Input            string
+	PatternsDir      string
+	Output           string
+	Mode             string
+	ReviewerPatterns bool
 
 	Progress io.Writer
 }
 
 type corpus struct {
-	Path  string
-	Stats corpusStats
+	Path           string
+	Stats          corpusStats
+	ReviewerAuthor string
 }
 
 type corpusStats struct {
@@ -56,7 +58,7 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	opts.Progress = stderr
 
 	progressf(opts.Progress, "review-patterns: reading review corpus from %s", opts.Input)
-	corpus, err := readCorpus(opts.Input)
+	corpus, err := readCorpus(opts.Input, opts.ReviewerPatterns)
 	if err != nil {
 		return err
 	}
@@ -73,7 +75,7 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	}
 	progressf(opts.Progress, "review-patterns: generating %s prompt", selectedMode)
 
-	content := renderPrompt(selectedMode, corpus, patterns, opts.PatternsDir)
+	content := renderPrompt(selectedMode, corpus, patterns, opts.PatternsDir, opts.ReviewerPatterns)
 	if opts.Output == "" || opts.Output == "-" {
 		progressf(opts.Progress, "review-patterns: writing prompt to stdout")
 		_, err := io.WriteString(stdout, content)
@@ -113,6 +115,7 @@ func ParseOptions(args []string, stderr io.Writer) (Options, error) {
 	flags.StringVar(&opts.PatternsDir, "patterns-dir", defaultPatternsDir, "directory containing existing pattern files")
 	flags.StringVar(&opts.Output, "output", defaultOutput, "prompt output path, or - for stdout")
 	flags.StringVar(&opts.Mode, "mode", "auto", "prompt mode: auto, extract, or update")
+	flags.BoolVar(&opts.ReviewerPatterns, "reviewer-patterns", false, "specialize pattern mining for a single reviewer author")
 
 	if err := flags.Parse(args); err != nil {
 		return Options{}, err
@@ -142,7 +145,7 @@ func validateOptions(opts Options) error {
 	}
 }
 
-func readCorpus(path string) (corpus, error) {
+func readCorpus(path string, requireSingleAuthor bool) (corpus, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return corpus{}, fmt.Errorf("read input JSONL: %w", err)
@@ -153,6 +156,8 @@ func readCorpus(path string) (corpus, error) {
 		CommentTypes: make(map[string]int),
 		Paths:        make(map[string]int),
 	}
+	var reviewerAuthor string
+	var reviewerAuthorLine int
 
 	for i, rawLine := range strings.Split(string(data), "\n") {
 		lineNumber := i + 1
@@ -170,12 +175,49 @@ func readCorpus(path string) (corpus, error) {
 		}
 
 		stats.Total++
+		if requireSingleAuthor {
+			author, err := requiredReviewerAuthor(object, lineNumber)
+			if err != nil {
+				return corpus{}, fmt.Errorf("%w. %s", err, reviewerFilterSuggestion(path, reviewerAuthor))
+			}
+			if reviewerAuthor == "" {
+				reviewerAuthor = author
+				reviewerAuthorLine = lineNumber
+			} else if author != reviewerAuthor {
+				return corpus{}, fmt.Errorf("--reviewer-patterns requires all input JSONL records to have the same author; line %d has author %q, but line %d established author %q. %s", lineNumber, author, reviewerAuthorLine, reviewerAuthor, reviewerFilterSuggestion(path, reviewerAuthor))
+			}
+		}
 		incrementJSONText(stats.Repos, object["repo"])
 		incrementJSONText(stats.CommentTypes, object["comment_type"])
 		incrementJSONText(stats.Paths, object["path"])
 	}
+	if requireSingleAuthor && stats.Total == 0 {
+		return corpus{}, fmt.Errorf("--reviewer-patterns requires at least one JSONL record with a non-empty author. %s", reviewerFilterSuggestion(path, ""))
+	}
 
-	return corpus{Path: path, Stats: stats}, nil
+	return corpus{Path: path, Stats: stats, ReviewerAuthor: reviewerAuthor}, nil
+}
+
+func requiredReviewerAuthor(object map[string]json.RawMessage, lineNumber int) (string, error) {
+	raw, ok := object["author"]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return "", fmt.Errorf("--reviewer-patterns requires every input JSONL record to have the same non-empty author; line %d has no author", lineNumber)
+	}
+	var author string
+	if err := json.Unmarshal(raw, &author); err != nil {
+		return "", fmt.Errorf("--reviewer-patterns requires every input JSONL record to have a string author; line %d author is not a string", lineNumber)
+	}
+	if strings.TrimSpace(author) == "" {
+		return "", fmt.Errorf("--reviewer-patterns requires every input JSONL record to have the same non-empty author; line %d has an empty author", lineNumber)
+	}
+	return author, nil
+}
+
+func reviewerFilterSuggestion(inputPath, author string) string {
+	if author == "" {
+		return fmt.Sprintf("Filter the corpus first, for example: review-patterns filter --input %q --author <login> --output <filtered.jsonl>", inputPath)
+	}
+	return fmt.Sprintf("Filter the corpus first, for example: review-patterns filter --input %q --author %q --output <filtered.jsonl>", inputPath, author)
 }
 
 func incrementJSONText(counts map[string]int, raw json.RawMessage) {
@@ -263,35 +305,47 @@ func selectMode(mode string, patterns []patternFile) (string, error) {
 	return mode, nil
 }
 
-func renderPrompt(mode string, corpus corpus, patterns []patternFile, patternsDir string) string {
+func renderPrompt(mode string, corpus corpus, patterns []patternFile, patternsDir string, reviewerPatterns bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# review-patterns prompt: %s\n\n", mode)
+	fmt.Fprintf(&b, "# review-patterns prompt: %s", mode)
+	if reviewerPatterns {
+		b.WriteString(" reviewer-patterns")
+	}
+	b.WriteString("\n\n")
 	if mode == "extract" {
-		writeExtractInstructions(&b, patternsDir)
+		writeExtractInstructions(&b, patternsDir, reviewerPatterns, corpus.ReviewerAuthor)
 	} else {
-		writeUpdateInstructions(&b, patternsDir)
+		writeUpdateInstructions(&b, patternsDir, reviewerPatterns, corpus.ReviewerAuthor)
 		writePatternReferences(&b, patternsDir, patterns)
 	}
-	writeCorpusSummary(&b, corpus.Stats)
+	writeCorpusSummary(&b, corpus.Stats, corpus.ReviewerAuthor)
 	writeCorpusReference(&b, corpus.Path)
 	b.WriteString("\n")
 	return b.String()
 }
 
-func writeExtractInstructions(b *strings.Builder, patternsDir string) {
+func writeExtractInstructions(b *strings.Builder, patternsDir string, reviewerPatterns bool, reviewerAuthor string) {
 	fmt.Fprintf(b, "## 目的\n\n")
-	fmt.Fprintf(b, "指定されたレビューJSONLファイルから、リポジトリローカルなコードレビュー用パタンランゲージの初期版を抽出してください。出力先は `%s` です。\n\n", patternsDir)
-	writeSharedInstructions(b)
+	if reviewerPatterns {
+		fmt.Fprintf(b, "指定されたレビューJSONLファイルから、author=%q のレビュワーが繰り返し見ている兆候、判断軸、フォースの重みづけに特化したパタンランゲージの初期版を抽出してください。出力先は `%s` です。\n\n", reviewerAuthor, patternsDir)
+	} else {
+		fmt.Fprintf(b, "指定されたレビューJSONLファイルから、リポジトリローカルなコードレビュー用パタンランゲージの初期版を抽出してください。出力先は `%s` です。\n\n", patternsDir)
+	}
+	writeSharedInstructions(b, reviewerPatterns, reviewerAuthor)
 	b.WriteString("## 初回抽出での判断\n\n")
 	b.WriteString("- 繰り返し現れる問題、または今後も再利用できる強いレビュー知識だけをパタン化する。\n")
 	b.WriteString("- 一回限りの好み、文脈依存の指摘、根拠の弱い一般化はパタンにしない。\n")
 	b.WriteString("- 必要なら `catalog.yaml` と `P###-slug.md` を新規作成する。\n\n")
 }
 
-func writeUpdateInstructions(b *strings.Builder, patternsDir string) {
+func writeUpdateInstructions(b *strings.Builder, patternsDir string, reviewerPatterns bool, reviewerAuthor string) {
 	fmt.Fprintf(b, "## 目的\n\n")
-	fmt.Fprintf(b, "指定されたレビューJSONLファイルと既存パタンを比較し、リポジトリローカルなコードレビュー用パタンランゲージを差分更新してください。出力先は `%s` です。\n\n", patternsDir)
-	writeSharedInstructions(b)
+	if reviewerPatterns {
+		fmt.Fprintf(b, "指定されたレビューJSONLファイルと既存パタンを比較し、author=%q のレビュワーが繰り返し見ている兆候、判断軸、フォースの重みづけに特化したパタンランゲージを差分更新してください。出力先は `%s` です。\n\n", reviewerAuthor, patternsDir)
+	} else {
+		fmt.Fprintf(b, "指定されたレビューJSONLファイルと既存パタンを比較し、リポジトリローカルなコードレビュー用パタンランゲージを差分更新してください。出力先は `%s` です。\n\n", patternsDir)
+	}
+	writeSharedInstructions(b, reviewerPatterns, reviewerAuthor)
 	b.WriteString("## 差分更新での判断\n\n")
 	b.WriteString("- 新しいレビュー例によって適用範囲、フォース、例外、誤検知が明確になる場合は既存パタンを更新する。\n")
 	b.WriteString("- 既存パタンでは扱えない繰り返し問題がある場合だけ新規パタンを追加する。\n")
@@ -299,7 +353,7 @@ func writeUpdateInstructions(b *strings.Builder, patternsDir string) {
 	b.WriteString("- 変更不要なら、なぜ変更不要かを簡潔に説明する。\n\n")
 }
 
-func writeSharedInstructions(b *strings.Builder) {
+func writeSharedInstructions(b *strings.Builder, reviewerPatterns bool, reviewerAuthor string) {
 	b.WriteString("## 守ること\n\n")
 	b.WriteString("- AIエージェント自体の実行や外部サービス呼び出しは行わず、パタンファイルの編集内容だけを提案または適用する。\n")
 	b.WriteString("- パタン本文は「文脈」「問題」「フォース」「解決」「結果として生じる文脈」を中心に構成する。\n")
@@ -309,9 +363,14 @@ func writeSharedInstructions(b *strings.Builder) {
 	b.WriteString("- 個人を責める表現、不要な個人名、不要なプロプライエタリ情報を残さない。\n")
 	b.WriteString("- 「必ず」「常に」のような断定は、フォースや例外を説明できる場合だけ使う。\n\n")
 	writeCorpusReadingProcess(b)
-	writePatternMiningProcess(b)
-	writeAcceptanceCriteria(b)
-	writePatternWritingInstructions(b)
+	if reviewerPatterns {
+		writeReviewerPatternMiningProcess(b, reviewerAuthor)
+		writeReviewerAcceptanceCriteria(b)
+	} else {
+		writePatternMiningProcess(b)
+		writeAcceptanceCriteria(b)
+	}
+	writePatternWritingInstructions(b, reviewerPatterns)
 	writeSelfShepherdingInstructions(b)
 }
 
@@ -335,6 +394,30 @@ func writePatternMiningProcess(b *strings.Builder) {
 	b.WriteString("その後、観察カードをファイル名や単語一致ではなく、同じ問題とフォースを共有するもの同士でクラスタリングする。\n\n")
 }
 
+func writeReviewerPatternMiningProcess(b *strings.Builder, reviewerAuthor string) {
+	fmt.Fprintf(b, "## パタン候補の見つけ方\n\nこの入力コーパスは author=%q の単一レビュワーに絞り込まれている前提で読む。\n\n", reviewerAuthor)
+	b.WriteString(`各レビュー指摘を、まず「思考の癖」を読むための観察カードとして短く分解する。
+
+- 文脈: どの種類の変更、コード、API、UI、テスト、運用で起きたか。
+- 表面上の指摘: レビュアーが直接求めた修正。
+- 着眼点: レビュアーが何に最初に反応しているか。命名、責務境界、データ整合性、例外系、将来変更、利用者視点、運用影響、テスト容易性など。
+- 問題の立て方: そのレビュアーが「何を問題だとみなしたか」。バグそのものではなく、曖昧さ、責務の混在、前提の隠れ、境界条件の未整理、読み手の誤解、変更耐性の低さなどとして読む。
+- 背後の懸念: そのままだと何が悪くなると見ているか。将来の変更ミス、仕様理解のずれ、利用者体験の劣化、データ不整合、運用時の調査困難、レビュー不能性など。
+- 重視しているフォース: そのレビュアーがどの価値の衝突を調停しようとしているか。明瞭さと簡潔さ、局所修正と設計一貫性、柔軟性と制約、実装速度と将来保守、ユーザー都合と内部都合など。
+- 推論の型: どのような考え方で指摘しているか。境界条件から考える、責務の置き場所を問う、利用者の誤解から逆算する、既存設計との対称性を見る、将来の変更経路を先読みする、テスト不能な暗黙前提を嫌う、など。
+- 介入の粒度: そのレビュアーがどの粒度で直そうとしているか。文言修正、条件分岐、メソッド分割、責務移動、API設計、テスト追加、仕様確認など。
+- 解決の核: レビューコメント文面ではなく、そのレビュアーが繰り返し使っている再利用可能な判断として言い換える。
+- 証拠: PR番号、コメント種別、関連パスを短く記録する。生コメント本文は残さない。
+
+その後、観察カードをファイル名、技術要素、単語一致ではなく、同じ「着眼点」「問題の立て方」「重視するフォース」「推論の型」を共有するもの同士でクラスタリングする。
+
+クラスタ名は、人格評価や性格診断のように書かず、レビュー時に再利用できる思考パタンとして命名する。たとえば「心配性」ではなく「境界条件から仕様を固める」、「細かい」ではなく「読み手の誤解を先回りして命名を整える」のように書く。
+
+パタン化するときは、その人が何を好むかではなく、どの文脈で、どのような兆候を見て、どのフォースを重視し、どの方向に判断を寄せる傾向があるかを抽出する。
+
+`)
+}
+
 func writeAcceptanceCriteria(b *strings.Builder) {
 	b.WriteString("## 採用基準\n\n")
 	b.WriteString("新規または更新対象のパタン候補は、次のいずれかを満たす場合だけ採用する。\n\n")
@@ -350,7 +433,41 @@ func writeAcceptanceCriteria(b *strings.Builder) {
 	b.WriteString("- 信頼度が低いのに硬いルールにしないと成立しないもの。\n\n")
 }
 
-func writePatternWritingInstructions(b *strings.Builder) {
+func writeReviewerAcceptanceCriteria(b *strings.Builder) {
+	b.WriteString(`## 採用基準
+
+新規または更新対象のパタン候補は、次のいずれかを満たす場合だけ採用する。
+
+- 同じレビュアーが、複数PRまたは複数箇所で、同じ着眼点や問題の立て方を繰り返している。
+- 表面的な修正内容は異なっていても、背後にあるフォースの捉え方や調停の方向が共通している。
+- そのレビュアーがレビュー時に優先しやすい価値判断として読み取れる。たとえば、明瞭さ、責務分離、既存設計との整合、境界条件、将来変更、利用者視点、運用容易性など。
+- 将来の差分に対して、レビューエージェントが「このレビュアーなら反応しそうな兆候」として観察できる。
+- 単なるコードスタイルではなく、判断の背景にある問題意識、フォース、例外条件を説明できる。
+- 出現回数は少なくても、コメントの密度が高く、そのレビュアーの特徴的な思考手順が明確に読める。
+- 既存パタンに吸収できる場合は新規作成せず、既存パタンの文脈、フォース、誤用、信頼度を更新する。
+
+次の候補は採用しない。
+
+- 一回限りの文脈依存判断で、そのレビュアー固有の再利用可能な着眼点として読めないもの。
+- 単なる表記ゆれ、文体、命名の好みだけに見えるもの。
+- リポジトリやチームの規約を述べているだけで、そのレビュアーの思考の癖としては区別できないもの。
+- 一般的すぎて、どのレビュアーにも当てはまるコードレビュー原則にしかなっていないもの。
+- 生のコードやレビューコメントを残さないと意味が通らないもの。
+- 人格評価、能力評価、性格診断、感情の推測になってしまうもの。
+- コメントの口調や強さだけを根拠にしたもの。
+- 信頼度が低いのに硬いルールにしないと成立しないもの。
+- 将来の差分から観察できる兆候がなく、レビューエージェントが実用できないもの。
+
+採用時は、パタンの信頼度を次の観点で明示する。
+
+- high: 複数の文脈で繰り返し現れ、同じ着眼点、フォース、解決方向が安定している。
+- medium: 繰り返しは限定的だが、コメント内容から特徴的な判断軸が読み取れる。
+- low: 有望な仮説ではあるが、出典が少ない、または文脈依存の可能性が残る。low の候補は硬いルールとして書かず、仮説的な観察パタンとして扱う。
+
+`)
+}
+
+func writePatternWritingInstructions(b *strings.Builder, reviewerPatterns bool) {
 	b.WriteString("## 書き方\n\n")
 	b.WriteString("各パタンは `P###-slug.md` として作成または更新し、`catalog.yaml` に登録する。Markdownは次の見出しを使う。\n\n")
 	b.WriteString("- 要約\n")
@@ -367,6 +484,9 @@ func writePatternWritingInstructions(b *strings.Builder) {
 	b.WriteString("- 関連パタン\n")
 	b.WriteString("- 変更履歴\n\n")
 	b.WriteString("特に `フォース` を厚く書く。パタンは「この場合はこう直す」というレシピではなく、「この文脈では、これらの力が衝突するので、この中心的判断で調停する」という形にする。\n\n")
+	if reviewerPatterns {
+		b.WriteString("パタンは「このリポジトリではこうすべき」という規約集ではなく、「このレビュアーはどのような兆候を問題化し、どのフォースを重視して判断する傾向があるか」を、将来のレビュー支援に使える形で書く。\n\n")
+	}
 }
 
 func writeSelfShepherdingInstructions(b *strings.Builder) {
@@ -392,9 +512,12 @@ func writePatternReferences(b *strings.Builder, patternsDir string, patterns []p
 	b.WriteString("既存パタンの内容は根拠として読みますが、更新後のパタンファイルにも生のコメントや生のコードを不要に残さないでください。\n\n")
 }
 
-func writeCorpusSummary(b *strings.Builder, stats corpusStats) {
+func writeCorpusSummary(b *strings.Builder, stats corpusStats, reviewerAuthor string) {
 	b.WriteString("## コーパス概要\n\n")
 	fmt.Fprintf(b, "- レコード数: %d\n", stats.Total)
+	if reviewerAuthor != "" {
+		fmt.Fprintf(b, "- 対象レビュワー: %s\n", reviewerAuthor)
+	}
 	writeCountList(b, "リポジトリ", stats.Repos, 8)
 	writeCountList(b, "コメント種別", stats.CommentTypes, 8)
 	writeCountList(b, "主な対象パス", stats.Paths, 12)

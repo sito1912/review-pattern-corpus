@@ -24,6 +24,19 @@ func TestParseOptionsDefaults(t *testing.T) {
 	if opts.Mode != "auto" {
 		t.Fatalf("Mode = %q, want auto", opts.Mode)
 	}
+	if opts.ReviewerPatterns {
+		t.Fatal("ReviewerPatterns = true, want false")
+	}
+}
+
+func TestParseOptionsReviewerPatterns(t *testing.T) {
+	opts, err := ParseOptions([]string{"--input", "reviews.jsonl", "--reviewer-patterns"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.ReviewerPatterns {
+		t.Fatal("ReviewerPatterns = false, want true")
+	}
 }
 
 func TestParseOptionsRequiresInput(t *testing.T) {
@@ -153,6 +166,96 @@ func TestRunAutoUpdateWithPatterns(t *testing.T) {
 	existingPatterns := sectionFrom(t, got, "## 既存パタンファイル")
 	if strings.Index(existingPatterns, "P001-scriptable-output.md") > strings.Index(existingPatterns, "catalog.yaml") {
 		t.Fatalf("pattern files are not sorted:\n%s", got)
+	}
+}
+
+func TestRunReviewerPatternsPrompt(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "reviews.jsonl")
+	output := filepath.Join(dir, "prompt.md")
+	writeFile(t, input, strings.Join([]string{
+		`{"schema_version":"1.0","repo":"owner/repo","author":"alice","comment_type":"review_comment","path":"internal/app.go","body":"Could this return a typed error?"}`,
+		`{"schema_version":"1.0","repo":"owner/repo","author":"alice","comment_type":"review_summary","body":"Prefer preserving caller context."}`,
+	}, "\n")+"\n")
+
+	err := Run([]string{
+		"--input", input,
+		"--patterns-dir", filepath.Join(dir, "missing-patterns"),
+		"--output", output,
+		"--reviewer-patterns",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := readFile(t, output)
+	for _, want := range []string{
+		"# review-patterns prompt: extract reviewer-patterns",
+		`author="alice" のレビュワー`,
+		"## パタン候補の見つけ方",
+		"思考の癖",
+		"着眼点",
+		"問題の立て方",
+		"推論の型",
+		"介入の粒度",
+		"境界条件から仕様を固める",
+		"## 採用基準",
+		"同じ着眼点や問題の立て方を繰り返している",
+		"コメントの密度が高く",
+		"high: 複数の文脈で繰り返し現れ",
+		"このレビュアーはどのような兆候を問題化し",
+		"対象レビュワー: alice",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Could this return a typed error?") {
+		t.Fatalf("prompt included raw JSONL body:\n%s", got)
+	}
+}
+
+func TestRunReviewerPatternsRejectsMixedAuthors(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "reviews.jsonl")
+	writeFile(t, input, strings.Join([]string{
+		`{"schema_version":"1.0","author":"alice","comment_type":"review_comment","body":"First note."}`,
+		`{"schema_version":"1.0","author":"bob","comment_type":"review_comment","body":"Second note."}`,
+	}, "\n")+"\n")
+
+	err := Run([]string{"--input", input, "--reviewer-patterns"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{
+		"--reviewer-patterns requires all input JSONL records to have the same author",
+		`line 2 has author "bob"`,
+		"review-patterns filter",
+		`--author "alice"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestRunReviewerPatternsRejectsMissingAuthor(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "reviews.jsonl")
+	writeFile(t, input, `{"schema_version":"1.0","comment_type":"review_comment","body":"Review note."}`+"\n")
+
+	err := Run([]string{"--input", input, "--reviewer-patterns"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{
+		"line 1 has no author",
+		"review-patterns filter",
+		"--author <login>",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
 	}
 }
 

@@ -86,6 +86,7 @@ until = 当日 00:00:00 UTC
 --patterns-dir .review-patterns/patterns
 --output prompt.md
 --mode auto|extract|update
+--reviewer-patterns
 ```
 
 挙動:
@@ -94,6 +95,8 @@ until = 当日 00:00:00 UTC
 - 生成プロンプトにはJSONL本文を埋め込まず、入力コーパスとして読むべきファイルパスを含める。
 - 既存の `.md`、`.yaml`、`.yml` パタンファイルがあれば検出し、生成プロンプトには既存パタン本文を埋め込まず、読むべきファイルパスを含める。
 - `--mode auto` の場合、既存パタンファイルがなければ初回抽出用、あれば差分更新用のプロンプトを生成する。
+- `--reviewer-patterns` を指定した場合、特定レビュワーの思考の癖に特化したパタン候補を抽出するため、「パタン候補の見つけ方」と「採用基準」を差し替える。
+- `--reviewer-patterns` を指定した場合、入力JSONLの全レコードの `author` が同じ非空文字列であることを事前に検証する。異なるauthor、欠落、`null`、空文字があればエラーにし、`filter --author` で絞り込むことを提案する。
 - `--output` が省略された場合、または `--output -` の場合は標準出力へMarkdownを書く。
 - 人間が任意のAIコーディングエージェントに渡すためのプロンプトを生成する。
 - MVPではAIエージェント自体を実行しない。
