@@ -41,25 +41,7 @@
 - 同じ期間に対する繰り返し実行では、実用上安定した出力順になる。
 - レート制限時の挙動が文書化され、過剰なリトライを行わない。
 
-## M3: Composite GitHub Action
-
-ゴール: GitHub Actions上で収集を実行する。
-
-成果物:
-
-- Composite Actionのラッパー
-- 期間、保存先、保持期間、匿名化、マスク処理、issue comment収集のAction入力
-- JSONLのArtifactアップロード
-- `redact` と `anonymize` は予約入力として提供し、`true` 指定時はMVP後対応予定として明示的に失敗する
-- M4完了後、生成プロンプトのArtifactアップロード
-
-完了条件:
-
-- 利用リポジトリがworkflowを追加し、手動で収集を実行できる。
-- 時刻入力がない場合、前日UTCを収集する。
-- JSONLがデフォルトでArtifactとしてアップロードされる。
-
-## M4: `prompt` CLI
+## M3: `prompt` CLI
 
 ゴール: JSONLと既存パタンからAIエージェント向けプロンプトを生成する。
 
@@ -79,11 +61,32 @@
 - JSONLと既存パタンがある場合、更新用プロンプトを生成できる。
 - プロンプトが、生のコードや生のレビューコメントを不要に残さないようAIエージェントへ明確に指示している。
 
+## M4: `filter` CLI
+
+ゴール: 収集済みJSONLから、特定パスやauthorに関係するレビューだけを抽出する。
+
+成果物:
+
+- `review-patterns filter`
+- `--input`
+- `--output`
+- `--path`
+- `--author`
+- 入力行を再エンコードせずに出力する処理
+
+完了条件:
+
+- path指定、author指定、両方指定で期待通りに抽出できる。
+- 不正なJSONL行が行番号つきで報告される。
+- pathがないレビューサマリーやissue commentをpath指定時に除外できる。
+
 ## M5: `validate` CLI
 
 ゴール: コーパスとパタンランゲージファイルを検証する。
 
-成果物:
+公開時点では未実装です。MVP後の候補として扱います。
+
+想定成果物:
 
 - `review-patterns validate`
 - JSONL検証
@@ -91,34 +94,35 @@
 - パタンMarkdownの見出し検証
 - 有用なエラーメッセージ
 
-完了条件:
+想定完了条件:
 
 - 不正なJSONL行が行番号つきで報告される。
 - catalog entryとファイルの対応が検証される。
 - パタンファイルに必須見出しがあることが検証される。
 
-## M6: OSS公開準備
+## M6: CLI公開準備
 
-ゴール: 他のリポジトリが利用できる状態にする。
+ゴール: 他のリポジトリがCLIとして利用できる状態にする。
 
 成果物:
 
 - インストールガイド: `docs/install.md`
-- GitHub Actions workflow例: `docs/examples/collect-review-pattern-corpus.yml`
 - セキュリティとプライバシーに関する注意: `docs/security-and-privacy.md`、`SECURITY.md`
 - コーパス保存方針の説明: `docs/install.md`、`docs/security-and-privacy.md`
 - コントリビューションガイド: `CONTRIBUTING.md`
 - リリース手順: `docs/release.md`
+- `go install github.com/sito1912/review-pattern-corpus/cmd/review-patterns@<version>` で導入できるタグ運用
 
 進捗:
 
-- 着手済み。公開前に必要な導入、保存方針、セキュリティ、コントリビューション、リリース手順のドキュメントを追加する。
+- 着手済み。公開前に必要な導入、保存方針、セキュリティ、コントリビューション、リリース手順のドキュメントを整える。
 - `validate` CLIは開発をスキップしているため、公開用導入手順では必須手順に含めない。
-- 残タスクは、タグつきリリースの実行と、リリースタグを参照した検証用リポジトリでのAction実行確認。
+- 特定CI/CDサービス専用ラッパーはMVPスコープから外す。
+- 残タスクは、タグつきリリースの実行と、公開タグからの `go install` 確認。
 
 完了条件:
 
-- 新しいリポジトリがドキュメントだけを見てActionを導入できる。
+- 新しいリポジトリがドキュメントだけを見てCLIを導入できる。
 - メンテナンスモデルが明確である。
 - タグつきリリースを公開できる。
 
@@ -127,9 +131,9 @@
 - 安定した匿名化マッピング。
 - secretや明らかなPIIのredactionルール。
 - リポジトリ保存コーパスの圧縮。
-- 過去Artifactの取得。
+- 保存済みJSONLの結合や期間横断の再処理支援。
 - GitHub GraphQL最適化。
-- 任意のissue comment収集。
+- 任意のissue comment収集の追加フィルタ。
 - 任意のAIエージェントコマンド実行。
 - パタン更新PRの生成。
 - 複数リポジトリ横断の集約モード。

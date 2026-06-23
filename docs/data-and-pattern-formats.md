@@ -18,7 +18,7 @@
     pattern.schema.json
 ```
 
-JSONLコーパスファイルはデフォルトではコミットしません。`--storage=repo` が指定された場合のみ、以下のような場所に保存できます。
+JSONLコーパスファイルはデフォルトではコミットしません。`review-patterns collect --output <path>` で明示した場合のみ、以下のような場所に保存できます。
 
 ```text
 .review-patterns/
@@ -26,7 +26,7 @@ JSONLコーパスファイルはデフォルトではコミットしません。
     reviews-2026-06-21.jsonl
 ```
 
-Composite Actionで `storage=repo` を指定した場合、出力ファイル名は対象期間の開始UTC日を使って `.review-patterns/corpus/reviews-YYYY-MM-DD.jsonl` にします。
+`.review-patterns/corpus/` は生のレビューコーパスを明示的に保持したい場合の候補です。通常は `tmp/` やCIの一時領域など、コミットされない場所への保存を推奨します。
 
 ## レビューJSONLスキーマ
 

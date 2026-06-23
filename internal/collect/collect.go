@@ -97,6 +97,15 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer) error {
 	}
 	opts.Progress = stderr
 
+	if opts.Repo == "" {
+		progressf(opts.Progress, "review-patterns: resolving GitHub repository")
+		repo, err := resolveRepo(context.Background(), opts.Repo, githubCLIRepo)
+		if err != nil {
+			return err
+		}
+		opts.Repo = repo
+	}
+
 	progressf(opts.Progress, "review-patterns: resolving GitHub authentication")
 	token, err := resolveToken(context.Background(), opts.Token, githubCLIToken)
 	if err != nil {
@@ -150,7 +159,7 @@ func ParseOptions(args []string, env map[string]string, stderr io.Writer) (Optio
 
 	flags := flag.NewFlagSet("collect", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.StringVar(&opts.Repo, "repo", env["GITHUB_REPOSITORY"], "GitHub repository in owner/repo form")
+	flags.StringVar(&opts.Repo, "repo", "", "GitHub repository in owner/repo form; defaults to GitHub CLI repository detection")
 	flags.StringVar(&opts.Output, "output", "-", "JSONL output path, or - for stdout")
 	flags.BoolVar(&opts.IncludeIssueComments, "include-issue-comments", false, "include pull request conversation issue comments")
 
@@ -295,13 +304,44 @@ func applyPeriod(opts *Options, sinceText, untilText string) error {
 }
 
 func validateOptions(opts Options) error {
-	if _, _, err := splitRepo(opts.Repo); err != nil {
-		return err
+	if opts.Repo != "" {
+		if _, _, err := splitRepo(opts.Repo); err != nil {
+			return err
+		}
 	}
 	if !opts.Since.Before(opts.Until) {
 		return errors.New("--since must be before --until")
 	}
 	return nil
+}
+
+func resolveRepo(ctx context.Context, repo string, ghRepo func(context.Context) (string, error)) (string, error) {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		detectedRepo, err := ghRepo(ctx)
+		if err != nil {
+			return "", fmt.Errorf("GitHub repository is required; pass --repo owner/repo or run inside a GitHub repository authenticated with `gh auth login`: %w", err)
+		}
+		repo = strings.TrimSpace(detectedRepo)
+		if repo == "" {
+			return "", errors.New("GitHub repository is required; pass --repo owner/repo or run inside a GitHub repository authenticated with `gh auth login`: GitHub CLI returned an empty repository")
+		}
+	}
+	if _, _, err := splitRepo(repo); err != nil {
+		return "", err
+	}
+	return repo, nil
+}
+
+func githubCLIRepo(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	output, err := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").Output()
+	if err != nil {
+		return "", fmt.Errorf("read GitHub repository with `gh repo view --json nameWithOwner --jq .nameWithOwner`: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func resolveToken(ctx context.Context, token string, ghToken func(context.Context) (string, error)) (string, error) {

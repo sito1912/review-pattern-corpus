@@ -1,13 +1,13 @@
 # リリース手順
 
-この手順は、`review-pattern-corpus` のComposite Actionを他リポジトリから固定タグで参照できる状態にするためのものです。
+この手順は、`review-patterns` CLIを固定バージョンで `go install` できる状態にするためのものです。
 
 ## バージョン方針
 
 - タグ名は `vMAJOR.MINOR.PATCH` 形式にします。
-- `v0` のような移動タグを用意し、利用者が互換範囲内の更新を受け取れるようにします。
-- 破壊的変更、Action入力の削除、JSONL形式の非互換変更は、リリースノートで明示します。
+- 破壊的変更、CLIフラグの削除、JSONL形式の非互換変更は、リリースノートで明示します。
 - MVP中の初回リリースは、メンテナーが内容を確認したうえで `v0.1.0` などの0系タグとして作成します。
+- 利用者には `@latest` ではなく、必要に応じて `@v0.1.0` のような固定タグを推奨します。
 
 ## 事前確認
 
@@ -16,15 +16,16 @@
 ```sh
 git status --short
 go test ./...
+go install ./cmd/review-patterns
 ```
 
 確認観点:
 
-- `README.md`、`docs/install.md`、`action.yml` の入力説明が一致している。
-- `docs/security-and-privacy.md` に保存方針と `redact` / `anonymize` の制限が書かれている。
+- `README.md`、`docs/install.md`、`docs/product-requirements.md` のCLI説明が一致している。
+- `docs/security-and-privacy.md` にJSONL保存方針と公開時の注意が書かれている。
 - `CONTRIBUTING.md` にメンテナンス方針が書かれている。
 - 実装されていないCLIを利用者向け手順で必須にしていない。
-- サンプルworkflowがタグ参照になっている。
+- `go install github.com/sito1912/review-pattern-corpus/cmd/review-patterns@<tag>` で導入する前提の説明になっている。
 
 ## タグ作成
 
@@ -35,38 +36,30 @@ git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-0系の互換タグを更新する場合:
-
-```sh
-git tag -f v0 v0.1.0
-git push origin v0 --force
-```
-
-移動タグを更新した場合は、リリースノートにその旨を記録します。
-
 ## GitHub Release作成
 
 GitHub上でタグに対応するReleaseを作成し、次を記載します。
 
 - 追加、変更、修正の概要。
-- Action入力やArtifact名の変更。
+- CLIコマンドやフラグの変更。
 - JSONL、catalog、パタンMarkdown形式の変更。
 - セキュリティやプライバシー上の注意。
-- 既知の制限。MVPでは `redact` と `anonymize` が未実装であることを明記します。
+- 既知の制限。MVPではAIエージェント実行、パタン変更コミット、Pull Request作成を行わないことを明記します。
 
 ## リリース後確認
 
-新しい一時リポジトリ、または検証用リポジトリで、タグを参照するworkflowを実行します。
+一時ディレクトリで、公開タグからCLIをインストールできることを確認します。
 
-```yaml
-- uses: sito1912/review-pattern-corpus@v0.1.0
+```sh
+GOBIN="$(pwd)/bin" go install github.com/sito1912/review-pattern-corpus/cmd/review-patterns@v0.1.0
+./bin/review-patterns --help
 ```
 
-確認すること:
+必要に応じて、読み取り可能な検証用リポジトリに対して次を確認します。
 
-- `review-patterns-corpus-YYYY-MM-DD` Artifactが生成される。
-- `review-patterns-prompt-YYYY-MM-DD` Artifactが生成される。
+- `review-patterns collect --repo owner/repo --output tmp/reviews.jsonl` がJSONLを生成する。
 - `since` と `until` を省略した場合、前日UTCが使われる。
-- `redact: "true"` または `anonymize: "true"` を指定した場合、明示的に失敗する。
+- `review-patterns prompt --input tmp/reviews.jsonl --patterns-dir .review-patterns/patterns --output tmp/prompt.md` がMarkdownプロンプトを生成する。
+- JSONLやプロンプトが意図せずコミット対象になっていない。
 
 問題があれば、修正後にPATCHバージョンを上げて再リリースします。

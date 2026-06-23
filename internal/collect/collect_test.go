@@ -59,6 +59,41 @@ func TestParseOptionsHelpDoesNotPrintTokenDefault(t *testing.T) {
 	}
 }
 
+func TestParseOptionsAllowsRepoOmissionForCLIDetection(t *testing.T) {
+	opts, err := ParseOptions([]string{"--token", "token"}, nil, bytes.NewBuffer(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Repo != "" {
+		t.Fatalf("repo = %q, want empty before CLI repository detection", opts.Repo)
+	}
+}
+
+func TestResolveRepoFallsBackToGitHubCLI(t *testing.T) {
+	repo, err := resolveRepo(context.Background(), "", func(context.Context) (string, error) {
+		return " owner/repo\n", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo != "owner/repo" {
+		t.Fatalf("repo = %q, want owner/repo", repo)
+	}
+}
+
+func TestResolveRepoPrefersExplicitRepo(t *testing.T) {
+	repo, err := resolveRepo(context.Background(), "owner/repo", func(context.Context) (string, error) {
+		t.Fatal("GitHub CLI repository resolver should not be called")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo != "owner/repo" {
+		t.Fatalf("repo = %q, want owner/repo", repo)
+	}
+}
+
 func TestResolveTokenFallsBackToGitHubCLI(t *testing.T) {
 	token, err := resolveToken(context.Background(), "", func(context.Context) (string, error) {
 		return " gh-token\n", nil

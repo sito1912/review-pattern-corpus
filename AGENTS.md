@@ -2,7 +2,7 @@
 
 ## プロジェクト概要
 
-このリポジトリは `review-pattern-corpus` を開発します。これは、人間によるコードレビュー指摘を収集し、リポジトリローカルなコードレビュー用パタンランゲージを保守するためのOSS GitHub Actionsプロダクトです。
+このリポジトリは `review-pattern-corpus` を開発します。これは、人間によるコードレビュー指摘を収集し、リポジトリローカルなコードレビュー用パタンランゲージを保守するためのOSS CLIプロダクトです。
 
 このプロダクトはAIエージェント非依存に保ちます。中核機能をCodex、Claude Code、その他の特定モデルに結合しないでください。CLIは人間がAIコーディングエージェントに渡すプロンプトを生成してよいですが、MVPではAIエージェントを直接実行してはいけません。
 
@@ -12,8 +12,8 @@
 - Go module: `github.com/sito1912/review-pattern-corpus`
 - ライセンス: MIT
 - 主な実装言語: Go
-- GitHub Action構成: Go CLIを包むComposite Action
-- デフォルトJSONL保存先: GitHub Actions Artifact
+- 配布形態: `go install github.com/sito1912/review-pattern-corpus/cmd/review-patterns@<version>` で導入できるGo CLI
+- デフォルトJSONL出力先: 標準出力。ファイル保存は `--output` で明示する
 - デフォルトパタン保存先: `.review-patterns/patterns/` 配下のコミット済みファイル
 - デフォルト対象期間: 前日UTC。当日0時UTCの24時間前から当日0時UTCまで
 
@@ -23,25 +23,25 @@
 
 ```text
 review-patterns collect
+review-patterns filter
 review-patterns prompt
-review-patterns validate
 ```
 
 MVPでやること:
 
 - UTC対象期間内にマージされたPull Requestからレビューデータを収集する。
 - JSONLを出力する。
-- Action経由で実行された場合、JSONLをArtifactとしてアップロードする。
+- 必要に応じて特定パスまたはauthorのレビューコメントだけに絞り込む。
 - 今回のJSONLと既存パタンファイルからプロンプトを生成する。
-- コーパスとパタンファイルを検証する。
 
 MVPでやらないこと:
 
 - AIコーディングエージェントを実行する。
 - 生成されたパタン変更をコミットする。
 - Pull Requestを作成する。
-- 過去Artifactを取得する。
+- 特定のCI/CDサービス専用ラッパーを提供する。
 - 中央ストレージや複数リポジトリ横断ストレージを提供する。
+- コーパスとパタンファイルを検証する `validate` CLIはMVP後の候補とする。
 
 ## 収集ルール
 
@@ -80,7 +80,7 @@ since <= merged_at < until
 .review-patterns/patterns/
 ```
 
-JSONLを以下に書き込むのは、repo storageが明示的に指定された場合だけです。
+JSONLを以下に書き込むのは、利用者が `--output` で明示した場合だけです。
 
 ```text
 .review-patterns/corpus/
@@ -129,7 +129,7 @@ JSONLを以下に書き込むのは、repo storageが明示的に指定された
 - 依存は最小限にする。
 - 実用上問題がなければ標準ライブラリを優先する。
 - GitHub APIの利用は保守的にし、レート制限を尊重する。
-- ローカル環境とGitHub Actionsの両方で動くコードを書く。
+- ローカル環境と任意のCIで扱いやすいCLIとして動くコードを書く。
 - コマンド出力はスクリプトから扱いやすくする。
 - エラーは修正につながる内容にする。
 - 永続化する時刻と期間比較にはUTCを使う。

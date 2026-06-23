@@ -1,48 +1,59 @@
 # インストールガイド
 
-このガイドは、別リポジトリに `review-pattern-corpus` のComposite Actionを導入し、マージ済みPull RequestからレビューコーパスJSONLとパタン更新用プロンプトを生成するための手順です。
+このガイドは、`review-patterns` CLIを導入し、マージ済みPull RequestからレビューコーパスJSONLとパタン更新用プロンプトを生成するための手順です。
 
-MVPではAIエージェントを直接実行しません。ActionはJSONLとプロンプトを生成し、人間が任意のAIコーディングエージェントにプロンプトを渡して `.review-patterns/patterns/` を更新します。
+MVPではAIエージェントを直接実行しません。CLIはJSONLとプロンプトを生成し、人間が任意のAIコーディングエージェントにプロンプトを渡して `.review-patterns/patterns/` を更新します。
 
 ## 前提
 
-- GitHub Actionsが利用できるリポジトリ。
-- Pull Request、review comment、必要に応じてissue commentを読むための権限。
-- Actionを固定タグで参照できる `review-pattern-corpus` のリリース。公開後は `@v0` または `@v0.1.0` のようなタグを使います。
+- Go 1.26以降。
+- Pull Request、review comment、必要に応じてissue commentを読むためのGitHub権限。
+- GitHub tokenを `GITHUB_TOKEN` または `GH_TOKEN` に設定するか、GitHub CLIで認証していること。
 
-## 最小workflow
+GitHub CLIを使う場合:
 
-次の内容を利用リポジトリの `.github/workflows/review-pattern-corpus.yml` に置きます。
+```sh
+gh auth login
+```
 
-```yaml
-name: Collect review pattern corpus
+## インストール
 
-on:
-  workflow_dispatch:
-    inputs:
-      since:
-        description: "Inclusive UTC start timestamp, for example 2026-06-21T00:00:00Z"
-        required: false
-      until:
-        description: "Exclusive UTC end timestamp, for example 2026-06-22T00:00:00Z"
-        required: false
-  schedule:
-    - cron: "17 1 * * *"
+タグつきリリース後は、固定バージョンを指定してインストールします。
 
-jobs:
-  collect:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sito1912/review-pattern-corpus@v0
-        with:
-          since: ${{ github.event.inputs.since }}
-          until: ${{ github.event.inputs.until }}
-          retention-days: "30"
+```sh
+go install github.com/sito1912/review-pattern-corpus/cmd/review-patterns@v0.1.0
+```
+
+公開前の検証では次を使えます。
+
+```sh
+go install github.com/sito1912/review-pattern-corpus/cmd/review-patterns@main
+```
+
+インストール先の `$(go env GOPATH)/bin` が `PATH` に入っていることを確認してください。
+
+```sh
+review-patterns --help
+```
+
+## ソースツリーから実行する
+
+リポジトリをcloneして検証する場合は、インストールせずに実行できます。
+
+```sh
+go run ./cmd/review-patterns --help
+```
+
+## 最小実行
+
+対象リポジトリと期間を指定してJSONLを生成します。
+
+```sh
+review-patterns collect \
+  --repo owner/repo \
+  --since 2026-06-21T00:00:00Z \
+  --until 2026-06-22T00:00:00Z \
+  --output tmp/reviews.jsonl
 ```
 
 `since` と `until` を両方省略すると、前日UTCの24時間が対象になります。
@@ -51,18 +62,35 @@ jobs:
 since <= pull_request.merged_at < until
 ```
 
+`--repo` を省略した場合は、現在のディレクトリで `gh repo view` を実行して `owner/repo` を推測します。推測できない環境では `--repo owner/repo` を明示してください。
+
 ## 生成される成果物
 
-デフォルトでは、JSONLコーパスと生成プロンプトはGitHub Actions Artifactとして保存されます。
+`collect` はJSONLを標準出力、または `--output` で指定したファイルへ書きます。
 
-- `review-patterns-corpus-YYYY-MM-DD`: 収集されたJSONL。
-- `review-patterns-prompt-YYYY-MM-DD`: AIエージェントに渡すMarkdownプロンプト。
+JSONLには生のレビューコメント、diff hunk、author、Pull Requestの文脈が含まれます。デフォルトではリポジトリにコミットされません。このリポジトリの `.gitignore` は `.review-patterns/corpus/` と `*.jsonl` を無視します。
 
-JSONLには生のレビューコメント、diff hunk、author、Pull Requestの文脈が含まれます。デフォルトではリポジトリにコミットされません。
+通常は次のように、コミットされない一時領域に保存してください。
+
+```sh
+mkdir -p tmp
+
+review-patterns collect \
+  --repo owner/repo \
+  --output tmp/reviews.jsonl
+```
 
 ## パタンファイルの初回作成
 
-初回は `.review-patterns/patterns/` が空、または存在しなくてもActionを実行できます。その場合、`prompt` は初回抽出用のプロンプトを生成します。
+初回は `.review-patterns/patterns/` が空、または存在しなくても `prompt` を実行できます。その場合、初回抽出用のプロンプトを生成します。
+
+```sh
+review-patterns prompt \
+  --input tmp/reviews.jsonl \
+  --patterns-dir .review-patterns/patterns \
+  --output tmp/prompt.md \
+  --mode auto
+```
 
 生成プロンプトを任意のAIコーディングエージェントに渡し、以下のようなファイルを作成します。
 
@@ -83,69 +111,38 @@ JSONLには生のレビューコメント、diff hunk、author、Pull Requestの
 
 ## issue commentも収集する
 
-Pull Request conversation issue commentを収集したい場合は、次の入力を追加します。
+Pull Request conversation issue commentを収集したい場合は、`--include-issue-comments` を指定します。
 
-```yaml
-      - uses: sito1912/review-pattern-corpus@v0
-        with:
-          include-issue-comments: "true"
+```sh
+review-patterns collect \
+  --repo owner/repo \
+  --include-issue-comments \
+  --output tmp/reviews.jsonl
 ```
 
 issue commentにはレビュー以外の議論も含まれやすいため、必要なリポジトリだけで有効化してください。
 
-## JSONLをリポジトリに保存する
-
-JSONLをArtifactではなくリポジトリ内に書きたい場合は、明示的に `storage: repo` を指定します。
-
-```yaml
-      - uses: sito1912/review-pattern-corpus@v0
-        with:
-          storage: repo
-```
-
-この場合、JSONLは `.review-patterns/corpus/reviews-YYYY-MM-DD.jsonl` に出力されます。Actionは自動コミットしません。保存する場合は、利用リポジトリ側のworkflowで内容を確認し、コミット処理を明示してください。
-
-デフォルトでは生のレビューコーパスをコミットしない運用を推奨します。
-
-## 入力一覧
-
-| 入力 | 既定値 | 説明 |
-| --- | --- | --- |
-| `since` | 空 | UTC対象期間の開始。`until` とセットで指定します。 |
-| `until` | 空 | UTC対象期間の終了。`since` とセットで指定します。 |
-| `include-issue-comments` | `false` | Pull Request conversation issue commentを収集します。 |
-| `storage` | `artifact` | JSONL保存先。`artifact` または `repo`。 |
-| `retention-days` | `30` | Artifact保持日数。 |
-| `redact` | `false` | 予約入力。MVPでは `true` を指定すると失敗します。 |
-| `anonymize` | `false` | 予約入力。MVPでは `true` を指定すると失敗します。 |
-| `github-token` | `github.token` | GitHub APIを読むためのtoken。通常は指定不要です。 |
-
-## ローカルで確認する
-
-CLIをローカルで実行する場合は、GitHub tokenを `GITHUB_TOKEN` または `GH_TOKEN` に設定するか、GitHub CLIで認証します。
-
-```sh
-go run ./cmd/review-patterns collect \
-  --repo owner/repo \
-  --since 2026-06-21T00:00:00Z \
-  --until 2026-06-22T00:00:00Z \
-  --output reviews.jsonl
-
-go run ./cmd/review-patterns prompt \
-  --input reviews.jsonl \
-  --patterns-dir .review-patterns/patterns \
-  --output prompt.md \
-  --mode auto
-```
+## 特定範囲へ絞り込む
 
 特定パスやauthorのコメントだけに絞る場合は `filter` を使います。
 
 ```sh
-go run ./cmd/review-patterns filter \
-  --input reviews.jsonl \
-  --output app-reviews.jsonl \
+review-patterns filter \
+  --input tmp/reviews.jsonl \
+  --output tmp/app-reviews.jsonl \
   --path /app/controllers \
   --author alice
 ```
 
 `--path` と `--author` を同時に指定した場合は、両方を満たす行だけが出力されます。
+
+## 自動実行
+
+CLIは標準入力や専用サービスに依存しません。定期実行したい場合は、cron、任意のCI、または社内ジョブ基盤から次の2段階を呼び出してください。
+
+```sh
+review-patterns collect --repo owner/repo --output tmp/reviews.jsonl
+review-patterns prompt --input tmp/reviews.jsonl --patterns-dir .review-patterns/patterns --output tmp/prompt.md
+```
+
+生成された `tmp/prompt.md` を人間が確認し、任意のAIコーディングエージェントへ渡します。MVPではAIエージェントの実行、パタン変更のコミット、Pull Request作成は行いません。

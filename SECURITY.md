@@ -1,6 +1,6 @@
 # セキュリティポリシー
 
-`review-pattern-corpus` は、人間のレビューコメント、diff文脈、author metadata、Pull Requestリンクを収集します。生成されるJSONL Artifactは、内容を確認するまで機密性のある開発データとして扱ってください。
+`review-pattern-corpus` は、人間のレビューコメント、diff文脈、author metadata、Pull Requestリンクを収集します。生成されるJSONLは、内容を確認するまで機密性のある開発データとして扱ってください。
 
 運用上の注意は [セキュリティとプライバシー](docs/security-and-privacy.md) を参照してください。
 

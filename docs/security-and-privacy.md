@@ -11,53 +11,39 @@ JSONLには、収集できる範囲で以下が含まれます。
 - author、author type、author association。
 - ファイルパス、行番号、diff hunk。
 - Pull RequestやコメントへのURL。
-- `include-issue-comments: true` の場合はPull Request conversation issue comment。
+- `--include-issue-comments` を指定した場合はPull Request conversation issue comment。
 
 CI/check annotation、commit comment、botコメント、bodyが空のapprove、system/generated eventは収集対象外です。
 
 ## 保存方針
 
-デフォルトではJSONLはGitHub Actions Artifactに保存され、リポジトリにはコミットされません。Artifactの保持期間は `retention-days` で指定できます。
+`review-patterns collect` は、デフォルトではJSONLを標準出力へ書きます。ファイルに保存する場合は `--output <path>` を明示します。
 
-`storage: repo` を明示した場合だけ、JSONLは `.review-patterns/corpus/reviews-YYYY-MM-DD.jsonl` に出力されます。このリポジトリの `.gitignore` は `.review-patterns/corpus/` と `*.jsonl` を無視するため、コミットする場合は利用側で明示的な判断が必要です。
+このリポジトリの `.gitignore` は `.review-patterns/corpus/` と `*.jsonl` を無視します。生のレビューコーパスを保存する場合でも、通常は `tmp/`、CIの一時領域、または `.review-patterns/corpus/` など、コミットされない場所を使ってください。
 
 生のレビューコーパスをコミットする前に、次を確認してください。
 
 - private repositoryの情報を公開リポジトリへ持ち出していないか。
 - 長いソースコード断片や機密仕様が含まれていないか。
 - 個人情報や不要な個人名が含まれていないか。
-- Artifact保存で足りる用途なのにrepo storageを選んでいないか。
+- コミットせずに一時ファイルとして扱えば足りる用途ではないか。
 
-## redactとanonymize
+## redactionとanonymization
 
-`redact` と `anonymize` はMVPでは予約入力です。
+MVPでは、安定したredactionやanonymizationは実装しません。
 
-```yaml
-with:
-  redact: "true"
-```
-
-または
-
-```yaml
-with:
-  anonymize: "true"
-```
-
-を指定すると、Actionは明示的に失敗します。現時点では、これらを指定しても機密情報の保護は行われません。
+JSONLを共有、保存、または公開リポジトリに持ち込む前に、利用者が内容を確認してください。機密情報の削除や著者名の匿名化が必要な場合は、生成されたJSONLを別ツールで処理してから `review-patterns prompt` に渡します。
 
 ## GitHub token
 
-通常は `github.token` を使います。workflowには次の最小権限を設定してください。
+GitHub APIを読むためのtokenは、次の順に参照します。
 
-```yaml
-permissions:
-  contents: read
-  pull-requests: read
-  issues: read
-```
+1. `--token`
+2. `GITHUB_TOKEN`
+3. `GH_TOKEN`
+4. `gh auth token`
 
-別tokenを `github-token` で渡す場合は、必要最小限のスコープを持つsecretを使い、ログへ値を出さないでください。Actionは受け取ったtokenをGitHub Actionsのmask commandでマスクします。
+tokenには、対象リポジトリのPull Request、review comment、必要に応じてissue commentを読むための最小権限だけを付与してください。CLIのログや生成ファイルにtokenを含めないでください。
 
 ## パタンファイルの公開基準
 
@@ -82,6 +68,6 @@ permissions:
 
 ## 公開リポジトリでの運用
 
-公開リポジトリでこのActionを使う場合、Artifactやパタンファイルが第三者に見られる前提で運用してください。
+公開リポジトリで使う場合、保存されたJSONLやパタンファイルが第三者に見られる前提で運用してください。
 
-private repositoryで使う場合でも、フォーク、外部コントリビューター、Artifactのアクセス範囲、保存期間を確認してください。特に `include-issue-comments` と `storage: repo` は、収集範囲と保存範囲を広げる入力です。
+private repositoryで使う場合でも、フォーク、外部コントリビューター、一時ファイルの保存先、ログの保管期間を確認してください。特に `--include-issue-comments` は収集範囲を広げるため、必要なリポジトリだけで有効化してください。
